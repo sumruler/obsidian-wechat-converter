@@ -110,6 +110,60 @@ function normalizeMultiPlatformSyncSettings(value = {}) {
   };
 }
 
+function getWechatSyncResultPlatformId(result = {}) {
+  return String(result.platform || result.id || result.type || '').trim();
+}
+
+function getWechatSyncResultError(result = {}) {
+  return String(result.error || result.message || '').trim();
+}
+
+function isWechatSyncAuthFailureMessage(message = '') {
+  return /未登录|登录|auth|unauthori[sz]ed|forbidden|cookie|token|鉴权|401|403/i.test(String(message || ''));
+}
+
+function isWechatSyncConnectionFailure(error = {}) {
+  return ['AUTH_FAILED', 'EXTENSION_NOT_CONNECTED', 'BRIDGE_UNAVAILABLE'].includes(error?.code);
+}
+
+function updateCachedPlatformsAfterSync(cachedPlatforms = [], results = []) {
+  const byId = new Map();
+  for (const platform of cachedPlatforms) {
+    const normalized = normalizeWechatsyncPlatform(platform);
+    if (normalized) byId.set(normalized.id, normalized);
+  }
+
+  for (const result of results) {
+    const platformId = getWechatSyncResultPlatformId(result);
+    if (!platformId || platformId === 'weixin') continue;
+    const previous = byId.get(platformId) || normalizeWechatsyncPlatform(result) || {
+      id: platformId,
+      name: platformId,
+      authenticated: false,
+    };
+    const errorMessage = getWechatSyncResultError(result);
+
+    if (result?.success === true) {
+      byId.set(platformId, {
+        ...previous,
+        authenticated: true,
+        error: '',
+      });
+      continue;
+    }
+
+    if (isWechatSyncAuthFailureMessage(errorMessage)) {
+      byId.set(platformId, {
+        ...previous,
+        authenticated: false,
+        error: errorMessage,
+      });
+    }
+  }
+
+  return Array.from(byId.values());
+}
+
 const IMAGE_SWIPE_COMMAND_COPY = {
   'image-swipe': {
     zhName: '插入图片块',
@@ -4176,20 +4230,60 @@ class AppleStyleView extends ItemView {
         modal.close();
         const results = Array.isArray(result?.results) ? result.results : (Array.isArray(result) ? result : []);
         const successCount = results.filter((item) => item?.success).length;
+        const failedResults = results.filter((item) => item && item.success === false);
+        const authFailedResults = failedResults.filter((item) => isWechatSyncAuthFailureMessage(getWechatSyncResultError(item)));
+        const currentMultiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+        this.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
+          ...currentMultiPlatformSettings,
+          connection: {
+            ...currentMultiPlatformSettings.connection,
+            status: 'connected',
+            checkedAt: Date.now(),
+            platforms: updateCachedPlatformsAfterSync(currentMultiPlatformSettings.connection.platforms, results),
+            message: '',
+          },
+        });
+        await this.plugin.saveSettings();
+
         if (results.length > 0) {
-          new Notice(`✅ Wechatsync 同步完成：${successCount}/${results.length} 个平台成功`, 8000);
+          if (failedResults.length > 0) {
+            const failedNames = failedResults
+              .map((item) => item.platformName || item.platform || item.id)
+              .filter(Boolean)
+              .slice(0, 4)
+              .join('、');
+            const suffix = failedResults.length > 4 ? ` 等 ${failedResults.length} 个平台` : '';
+            new Notice(`⚠️ Wechatsync 同步完成：${successCount}/${results.length} 个平台成功；${failedNames}${suffix} 失败，可修复后重试失败平台。`, 10000);
+            if (authFailedResults.length > 0) {
+              new Notice('部分平台登录状态可能已失效，已更新缓存。请在浏览器重新登录后，到插件设置中测试连接。', 10000);
+            }
+          } else {
+            new Notice(`✅ Wechatsync 同步完成：${successCount}/${results.length} 个平台成功`, 8000);
+          }
         } else {
           new Notice('✅ 已发送到 Wechatsync，请在浏览器扩展中查看同步结果', 8000);
         }
       } catch (error) {
         notice.hide();
         console.error('Wechatsync sync error:', error);
+        if (isWechatSyncConnectionFailure(error)) {
+          const currentMultiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+          this.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
+            ...currentMultiPlatformSettings,
+            connection: {
+              ...currentMultiPlatformSettings.connection,
+              status: 'failed',
+              checkedAt: Date.now(),
+              message: error.message || 'Wechatsync 连接失败',
+            },
+          });
+          await this.plugin.saveSettings();
+        }
         new Notice(`❌ Wechatsync 同步失败：${error.message}`, 10000);
       }
     };
 
     modal.open();
-    refreshPlatforms();
   }
 
   /**
