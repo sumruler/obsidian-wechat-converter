@@ -103,6 +103,87 @@ describe('Wechatsync bridge service', () => {
     });
   });
 
+  it('passes syncArticle results through with draft URLs and per-platform errors', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      requestTimeoutMs: 1000,
+      connectTimeoutMs: 1000,
+      idFactory: () => 'sync-1',
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const extension = await connectExtension(port, (message) => {
+      expect(message).toMatchObject({
+        id: 'sync-1',
+        method: 'syncArticle',
+        token: 'secret-token',
+        params: {
+          platforms: ['zhihu', 'juejin'],
+          article: {
+            title: '测试文章',
+            markdown: '# 正文',
+            content: '<h1>正文</h1>',
+            cover: 'https://example.com/cover.png',
+          },
+        },
+      });
+      return {
+        result: {
+          syncId: 'remote-sync-1',
+          results: [
+            {
+              platform: 'zhihu',
+              platformName: '知乎',
+              success: true,
+              postUrl: 'https://zhuanlan.zhihu.com/p/123/edit',
+              draftOnly: true,
+            },
+            {
+              platform: 'juejin',
+              platformName: '掘金',
+              success: false,
+              error: '未登录',
+            },
+          ],
+        },
+      };
+    });
+    cleanup.push(extension);
+
+    await service.waitForConnection(1000);
+    const result = await service.syncArticle({
+      platforms: ['zhihu', 'juejin'],
+      title: '测试文章',
+      markdown: '# 正文',
+      content: '<h1>正文</h1>',
+      cover: 'https://example.com/cover.png',
+    });
+
+    expect(result).toEqual({
+      syncId: 'remote-sync-1',
+      results: [
+        {
+          platform: 'zhihu',
+          platformName: '知乎',
+          success: true,
+          postUrl: 'https://zhuanlan.zhihu.com/p/123/edit',
+          draftOnly: true,
+        },
+        {
+          platform: 'juejin',
+          platformName: '掘金',
+          success: false,
+          error: '未登录',
+        },
+      ],
+    });
+  });
+
   it('can forward through an existing primary bridge HTTP API', async () => {
     const port = await getFreePort();
     const primary = createWechatSyncBridgeService({

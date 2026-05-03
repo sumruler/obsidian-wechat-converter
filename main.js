@@ -10759,6 +10759,111 @@ var require_wechatsync_bridge = __commonJS({
   }
 });
 
+// services/wechatsync-results.js
+var require_wechatsync_results = __commonJS({
+  "services/wechatsync-results.js"(exports2, module2) {
+    function normalizeWechatsyncPlatform2(platform = {}) {
+      const id = String(platform.id || platform.type || platform.platform || "").trim();
+      if (!id || id === "weixin")
+        return null;
+      return {
+        id,
+        name: String(platform.name || platform.title || platform.platformName || id),
+        authenticated: platform.isAuthenticated === true || platform.authenticated === true || platform.isAuth === true || platform.loggedIn === true || platform.status === "authenticated" || platform.status === "logged_in",
+        username: typeof platform.username === "string" ? platform.username : "",
+        error: typeof platform.error === "string" ? platform.error : ""
+      };
+    }
+    function getWechatSyncResultPlatformId2(result = {}) {
+      return String(result.platform || result.id || result.type || "").trim();
+    }
+    function getWechatSyncResultError2(result = {}) {
+      return String(result.error || result.message || "").trim();
+    }
+    function getWechatSyncResultUrl2(result = {}) {
+      return String(result.postUrl || result.draftUrl || result.editUrl || result.url || result.link || "").trim();
+    }
+    function isWechatSyncAuthFailureMessage(message = "") {
+      return /未登录|登录|auth|unauthori[sz]ed|forbidden|cookie|token|鉴权|401|403/i.test(String(message || ""));
+    }
+    function isWechatSyncConnectionFailure2(error = {}) {
+      return ["AUTH_FAILED", "EXTENSION_NOT_CONNECTED", "BRIDGE_UNAVAILABLE"].includes(error == null ? void 0 : error.code);
+    }
+    function normalizeWechatSyncResponseResults2(result) {
+      if (Array.isArray(result == null ? void 0 : result.results))
+        return result.results.filter(Boolean);
+      if (Array.isArray(result))
+        return result.filter(Boolean);
+      if (result && typeof result === "object" && "success" in result)
+        return [result];
+      return [];
+    }
+    function getMultiPlatformResultSummary2(results = [], requestedPlatformIds = [], fatalError = null) {
+      const normalizedResults = normalizeWechatSyncResponseResults2(results);
+      const successResults = normalizedResults.filter((item) => (item == null ? void 0 : item.success) === true);
+      const failedResults = normalizedResults.filter((item) => (item == null ? void 0 : item.success) === false);
+      const authFailedResults = failedResults.filter((item) => isWechatSyncAuthFailureMessage(getWechatSyncResultError2(item)));
+      const totalCount = normalizedResults.length || requestedPlatformIds.length;
+      return {
+        normalizedResults,
+        successResults,
+        failedResults,
+        authFailedResults,
+        successCount: successResults.length,
+        failedCount: failedResults.length,
+        totalCount,
+        isAllSuccess: totalCount > 0 && !fatalError && successResults.length === totalCount
+      };
+    }
+    function updateCachedPlatformsAfterSync2(cachedPlatforms = [], results = []) {
+      const byId = /* @__PURE__ */ new Map();
+      for (const platform of cachedPlatforms) {
+        const normalized = normalizeWechatsyncPlatform2(platform);
+        if (normalized)
+          byId.set(normalized.id, normalized);
+      }
+      for (const result of normalizeWechatSyncResponseResults2(results)) {
+        const platformId = getWechatSyncResultPlatformId2(result);
+        if (!platformId || platformId === "weixin")
+          continue;
+        const previous = byId.get(platformId) || normalizeWechatsyncPlatform2(result) || {
+          id: platformId,
+          name: platformId,
+          authenticated: false
+        };
+        const errorMessage = getWechatSyncResultError2(result);
+        if ((result == null ? void 0 : result.success) === true) {
+          byId.set(platformId, {
+            ...previous,
+            authenticated: true,
+            error: ""
+          });
+          continue;
+        }
+        if (isWechatSyncAuthFailureMessage(errorMessage)) {
+          byId.set(platformId, {
+            ...previous,
+            authenticated: false,
+            error: errorMessage
+          });
+        }
+      }
+      return Array.from(byId.values());
+    }
+    module2.exports = {
+      getMultiPlatformResultSummary: getMultiPlatformResultSummary2,
+      getWechatSyncResultError: getWechatSyncResultError2,
+      getWechatSyncResultPlatformId: getWechatSyncResultPlatformId2,
+      getWechatSyncResultUrl: getWechatSyncResultUrl2,
+      isWechatSyncAuthFailureMessage,
+      isWechatSyncConnectionFailure: isWechatSyncConnectionFailure2,
+      normalizeWechatSyncResponseResults: normalizeWechatSyncResponseResults2,
+      normalizeWechatsyncPlatform: normalizeWechatsyncPlatform2,
+      updateCachedPlatformsAfterSync: updateCachedPlatformsAfterSync2
+    };
+  }
+});
+
 // services/sync-context.js
 var require_sync_context = __commonJS({
   "services/sync-context.js"(exports2, module2) {
@@ -11854,6 +11959,16 @@ var {
   DEFAULT_WECHATSYNC_PORT,
   createWechatSyncBridgeService
 } = require_wechatsync_bridge();
+var {
+  getMultiPlatformResultSummary,
+  getWechatSyncResultError,
+  getWechatSyncResultPlatformId,
+  getWechatSyncResultUrl,
+  isWechatSyncConnectionFailure,
+  normalizeWechatSyncResponseResults,
+  normalizeWechatsyncPlatform,
+  updateCachedPlatformsAfterSync
+} = require_wechatsync_results();
 var { resolveSyncAccount, toSyncFriendlyMessage } = require_sync_context();
 var { processAllImages: processAllImagesService, processMathFormulas: processMathFormulasService } = require_wechat_media();
 var { cleanHtmlForDraft: cleanHtmlForDraftService } = require_wechat_html_cleaner();
@@ -11872,18 +11987,6 @@ function createDefaultMultiPlatformSyncSettings() {
       platforms: [],
       message: ""
     }
-  };
-}
-function normalizeWechatsyncPlatform(platform = {}) {
-  const id = String(platform.id || platform.type || platform.platform || "").trim();
-  if (!id || id === "weixin")
-    return null;
-  return {
-    id,
-    name: String(platform.name || platform.title || platform.platformName || id),
-    authenticated: platform.isAuthenticated === true || platform.authenticated === true || platform.isAuth === true || platform.loggedIn === true || platform.status === "authenticated" || platform.status === "logged_in",
-    username: typeof platform.username === "string" ? platform.username : "",
-    error: typeof platform.error === "string" ? platform.error : ""
   };
 }
 function normalizeMultiPlatformConnection(value = {}) {
@@ -11906,56 +12009,6 @@ function normalizeMultiPlatformSyncSettings(value = {}) {
     token: typeof source.token === "string" ? source.token.trim() : "",
     connection: normalizeMultiPlatformConnection(source.connection)
   };
-}
-function getWechatSyncResultPlatformId(result = {}) {
-  return String(result.platform || result.id || result.type || "").trim();
-}
-function getWechatSyncResultError(result = {}) {
-  return String(result.error || result.message || "").trim();
-}
-function getWechatSyncResultUrl(result = {}) {
-  return String(result.postUrl || result.draftUrl || result.editUrl || result.url || result.link || "").trim();
-}
-function isWechatSyncAuthFailureMessage(message = "") {
-  return /未登录|登录|auth|unauthori[sz]ed|forbidden|cookie|token|鉴权|401|403/i.test(String(message || ""));
-}
-function isWechatSyncConnectionFailure(error = {}) {
-  return ["AUTH_FAILED", "EXTENSION_NOT_CONNECTED", "BRIDGE_UNAVAILABLE"].includes(error == null ? void 0 : error.code);
-}
-function updateCachedPlatformsAfterSync(cachedPlatforms = [], results = []) {
-  const byId = /* @__PURE__ */ new Map();
-  for (const platform of cachedPlatforms) {
-    const normalized = normalizeWechatsyncPlatform(platform);
-    if (normalized)
-      byId.set(normalized.id, normalized);
-  }
-  for (const result of results) {
-    const platformId = getWechatSyncResultPlatformId(result);
-    if (!platformId || platformId === "weixin")
-      continue;
-    const previous = byId.get(platformId) || normalizeWechatsyncPlatform(result) || {
-      id: platformId,
-      name: platformId,
-      authenticated: false
-    };
-    const errorMessage = getWechatSyncResultError(result);
-    if ((result == null ? void 0 : result.success) === true) {
-      byId.set(platformId, {
-        ...previous,
-        authenticated: true,
-        error: ""
-      });
-      continue;
-    }
-    if (isWechatSyncAuthFailureMessage(errorMessage)) {
-      byId.set(platformId, {
-        ...previous,
-        authenticated: false,
-        error: errorMessage
-      });
-    }
-  }
-  return Array.from(byId.values());
 }
 var IMAGE_SWIPE_COMMAND_COPY = {
   "image-swipe": {
@@ -15375,11 +15428,12 @@ var AppleStyleView = class extends ItemView {
     const platformById = new Map(
       (bridgeSettings.connection.platforms || []).map((platform) => normalizeWechatsyncPlatform(platform)).filter(Boolean).map((platform) => [platform.id, platform])
     );
-    const normalizedResults = Array.isArray(results) ? results.filter(Boolean) : [];
-    const successResults = normalizedResults.filter((item) => (item == null ? void 0 : item.success) === true);
-    const failedResults = normalizedResults.filter((item) => (item == null ? void 0 : item.success) === false);
-    const totalCount = normalizedResults.length || requestedPlatformIds.length;
-    const isAllSuccess = totalCount > 0 && !fatalError && successResults.length === totalCount;
+    const {
+      normalizedResults,
+      successCount,
+      failedResults,
+      isAllSuccess
+    } = getMultiPlatformResultSummary(results, requestedPlatformIds, fatalError);
     modal.titleEl.setText("\u540C\u6B65\u7ED3\u679C");
     (_b = (_a = modal.titleEl).addClass) == null ? void 0 : _b.call(_a, "wechat-multiplatform-title");
     modal.contentEl.addClass("wechat-sync-modal");
@@ -15404,7 +15458,7 @@ var AppleStyleView = class extends ItemView {
       text: fatalError ? "\u540C\u6B65\u6CA1\u6709\u5B8C\u6210" : isAllSuccess ? "\u8349\u7A3F\u5DF2\u4FDD\u5B58" : "\u90E8\u5206\u5E73\u53F0\u9700\u8981\u5904\u7406"
     });
     summary.createEl("p", {
-      text: fatalError ? fatalError.message || "Wechatsync \u8FDE\u63A5\u4E2D\u65AD\uFF0C\u8BF7\u68C0\u67E5\u6269\u5C55\u3001Token \u6216\u6D4F\u89C8\u5668\u767B\u5F55\u6001\u540E\u91CD\u8BD5\u3002" : normalizedResults.length > 0 ? `${successResults.length}/${normalizedResults.length} \u4E2A\u5E73\u53F0\u5DF2\u4FDD\u5B58\u4E3A\u8349\u7A3F\u3002\u6210\u529F\u7684\u5E73\u53F0\u53EF\u4EE5\u76F4\u63A5\u6253\u5F00\u8349\u7A3F\u68C0\u67E5\uFF0C\u5931\u8D25\u7684\u5E73\u53F0\u4FEE\u590D\u540E\u91CD\u65B0\u540C\u6B65\u3002` : "\u8BF7\u6C42\u5DF2\u53D1\u9001\u5230 Wechatsync \u6269\u5C55\u3002\u82E5\u8FD9\u91CC\u6CA1\u6709\u8FD4\u56DE\u5E73\u53F0\u660E\u7EC6\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u6269\u5C55\u4E2D\u67E5\u770B\u7ED3\u679C\u3002"
+      text: fatalError ? fatalError.message || "Wechatsync \u8FDE\u63A5\u4E2D\u65AD\uFF0C\u8BF7\u68C0\u67E5\u6269\u5C55\u3001Token \u6216\u6D4F\u89C8\u5668\u767B\u5F55\u6001\u540E\u91CD\u8BD5\u3002" : normalizedResults.length > 0 ? `${successCount}/${normalizedResults.length} \u4E2A\u5E73\u53F0\u5DF2\u4FDD\u5B58\u4E3A\u8349\u7A3F\u3002\u6210\u529F\u7684\u5E73\u53F0\u53EF\u4EE5\u76F4\u63A5\u6253\u5F00\u8349\u7A3F\u68C0\u67E5\uFF0C\u5931\u8D25\u7684\u5E73\u53F0\u4FEE\u590D\u540E\u91CD\u65B0\u540C\u6B65\u3002` : "\u8BF7\u6C42\u5DF2\u53D1\u9001\u5230 Wechatsync \u6269\u5C55\u3002\u82E5\u8FD9\u91CC\u6CA1\u6709\u8FD4\u56DE\u5E73\u53F0\u660E\u7EC6\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u6269\u5C55\u4E2D\u67E5\u770B\u7ED3\u679C\u3002"
     });
     const list = modal.contentEl.createDiv({ cls: "wechat-multiplatform-result-list" });
     if (fatalError) {
@@ -15657,9 +15711,8 @@ var AppleStyleView = class extends ItemView {
         });
         notice.hide();
         modal.close();
-        const results = Array.isArray(result == null ? void 0 : result.results) ? result.results : Array.isArray(result) ? result : result && typeof result === "object" && "success" in result ? [result] : [];
-        const failedResults = results.filter((item) => item && item.success === false);
-        const authFailedResults = failedResults.filter((item) => isWechatSyncAuthFailureMessage(getWechatSyncResultError(item)));
+        const results = normalizeWechatSyncResponseResults(result);
+        const { authFailedResults } = getMultiPlatformResultSummary(results, requestedPlatformIds);
         const currentMultiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
         this.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
           ...currentMultiPlatformSettings,
