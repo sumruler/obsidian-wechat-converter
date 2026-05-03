@@ -11913,6 +11913,9 @@ function getWechatSyncResultPlatformId(result = {}) {
 function getWechatSyncResultError(result = {}) {
   return String(result.error || result.message || "").trim();
 }
+function getWechatSyncResultUrl(result = {}) {
+  return String(result.postUrl || result.draftUrl || result.editUrl || result.url || result.link || "").trim();
+}
 function isWechatSyncAuthFailureMessage(message = "") {
   return /未登录|登录|auth|unauthori[sz]ed|forbidden|cookie|token|鉴权|401|403/i.test(String(message || ""));
 }
@@ -15088,6 +15091,28 @@ var AppleStyleView = class extends ItemView {
     }
     return true;
   }
+  openExternalUrl(url) {
+    var _a;
+    const target = String(url || "").trim();
+    if (!/^https?:\/\//i.test(target)) {
+      new Notice("\u8349\u7A3F\u94FE\u63A5\u4E0D\u53EF\u7528");
+      return false;
+    }
+    try {
+      const electron = require("electron");
+      if ((_a = electron == null ? void 0 : electron.shell) == null ? void 0 : _a.openExternal) {
+        electron.shell.openExternal(target);
+        return true;
+      }
+    } catch (e) {
+    }
+    if (typeof window !== "undefined" && typeof window.open === "function") {
+      window.open(target, "_blank", "noopener");
+      return true;
+    }
+    new Notice("\u65E0\u6CD5\u6253\u5F00\u8349\u7A3F\u94FE\u63A5\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u6269\u5C55\u4E2D\u67E5\u770B\u540C\u6B65\u7ED3\u679C");
+    return false;
+  }
   showAccountSetupEmptyState() {
     var _a;
     const { Modal } = require("obsidian");
@@ -15336,6 +15361,113 @@ var AppleStyleView = class extends ItemView {
     };
     modal.open();
   }
+  showMultiPlatformSyncResultModal({ results = [], requestedPlatformIds = [], fatalError = null } = {}) {
+    var _a, _b, _c, _d, _e;
+    const { Modal } = require("obsidian");
+    if (typeof Modal !== "function") {
+      const message = fatalError ? `Wechatsync \u540C\u6B65\u5931\u8D25\uFF1A${fatalError.message || fatalError}` : "Wechatsync \u540C\u6B65\u5B8C\u6210\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u6269\u5C55\u4E2D\u67E5\u770B\u7ED3\u679C";
+      new Notice(message, 1e4);
+      return;
+    }
+    const modal = new Modal(this.app);
+    const mobileSync = isMobileClient(this.app);
+    const bridgeSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const platformById = new Map(
+      (bridgeSettings.connection.platforms || []).map((platform) => normalizeWechatsyncPlatform(platform)).filter(Boolean).map((platform) => [platform.id, platform])
+    );
+    const normalizedResults = Array.isArray(results) ? results.filter(Boolean) : [];
+    const successResults = normalizedResults.filter((item) => (item == null ? void 0 : item.success) === true);
+    const failedResults = normalizedResults.filter((item) => (item == null ? void 0 : item.success) === false);
+    const totalCount = normalizedResults.length || requestedPlatformIds.length;
+    const isAllSuccess = totalCount > 0 && !fatalError && successResults.length === totalCount;
+    modal.titleEl.setText("\u540C\u6B65\u7ED3\u679C");
+    (_b = (_a = modal.titleEl).addClass) == null ? void 0 : _b.call(_a, "wechat-multiplatform-title");
+    modal.contentEl.addClass("wechat-sync-modal");
+    modal.contentEl.addClass("wechat-multiplatform-modal");
+    modal.contentEl.addClass("wechat-multiplatform-result-modal");
+    (_c = modal.modalEl) == null ? void 0 : _c.addClass("wechat-publish-shell");
+    (_d = modal.modalEl) == null ? void 0 : _d.addClass("wechat-multiplatform-shell");
+    if (mobileSync) {
+      modal.contentEl.addClass("wechat-sync-modal-mobile");
+      (_e = modal.modalEl) == null ? void 0 : _e.addClass("wechat-sync-shell-mobile");
+    }
+    const getPlatformName = (result = {}) => {
+      var _a2;
+      const id = getWechatSyncResultPlatformId(result);
+      return result.platformName || result.name || ((_a2 = platformById.get(id)) == null ? void 0 : _a2.name) || id || "\u672A\u77E5\u5E73\u53F0";
+    };
+    const summary = modal.contentEl.createDiv({
+      cls: `wechat-multiplatform-result-summary ${fatalError ? "is-error" : isAllSuccess ? "is-success" : "is-warning"}`
+    });
+    summary.createEl("div", {
+      cls: "wechat-multiplatform-result-summary-title",
+      text: fatalError ? "\u540C\u6B65\u6CA1\u6709\u5B8C\u6210" : isAllSuccess ? "\u8349\u7A3F\u5DF2\u4FDD\u5B58" : "\u90E8\u5206\u5E73\u53F0\u9700\u8981\u5904\u7406"
+    });
+    summary.createEl("p", {
+      text: fatalError ? fatalError.message || "Wechatsync \u8FDE\u63A5\u4E2D\u65AD\uFF0C\u8BF7\u68C0\u67E5\u6269\u5C55\u3001Token \u6216\u6D4F\u89C8\u5668\u767B\u5F55\u6001\u540E\u91CD\u8BD5\u3002" : normalizedResults.length > 0 ? `${successResults.length}/${normalizedResults.length} \u4E2A\u5E73\u53F0\u5DF2\u4FDD\u5B58\u4E3A\u8349\u7A3F\u3002\u6210\u529F\u7684\u5E73\u53F0\u53EF\u4EE5\u76F4\u63A5\u6253\u5F00\u8349\u7A3F\u68C0\u67E5\uFF0C\u5931\u8D25\u7684\u5E73\u53F0\u4FEE\u590D\u540E\u91CD\u65B0\u540C\u6B65\u3002` : "\u8BF7\u6C42\u5DF2\u53D1\u9001\u5230 Wechatsync \u6269\u5C55\u3002\u82E5\u8FD9\u91CC\u6CA1\u6709\u8FD4\u56DE\u5E73\u53F0\u660E\u7EC6\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u6269\u5C55\u4E2D\u67E5\u770B\u7ED3\u679C\u3002"
+    });
+    const list = modal.contentEl.createDiv({ cls: "wechat-multiplatform-result-list" });
+    if (fatalError) {
+      const row = list.createDiv({ cls: "wechat-multiplatform-result-row is-error" });
+      const body = row.createDiv({ cls: "wechat-multiplatform-result-body" });
+      body.createEl("div", { text: "Wechatsync \u6865\u63A5", cls: "wechat-multiplatform-result-name" });
+      body.createEl("div", {
+        text: fatalError.message || "\u8FDE\u63A5\u4E0D\u53EF\u7528",
+        cls: "wechat-multiplatform-result-detail"
+      });
+    } else if (normalizedResults.length === 0) {
+      const row = list.createDiv({ cls: "wechat-multiplatform-result-row" });
+      const body = row.createDiv({ cls: "wechat-multiplatform-result-body" });
+      body.createEl("div", { text: "\u7B49\u5F85\u6269\u5C55\u7ED3\u679C", cls: "wechat-multiplatform-result-name" });
+      body.createEl("div", {
+        text: "\u5F53\u524D\u6865\u63A5\u6CA1\u6709\u8FD4\u56DE\u5E73\u53F0\u660E\u7EC6\u3002\u8BF7\u5728\u6D4F\u89C8\u5668\u6269\u5C55\u4FA7\u786E\u8BA4\u8349\u7A3F\u662F\u5426\u5DF2\u751F\u6210\u3002",
+        cls: "wechat-multiplatform-result-detail"
+      });
+    } else {
+      for (const result of normalizedResults) {
+        const draftUrl = getWechatSyncResultUrl(result);
+        const errorMessage = getWechatSyncResultError(result);
+        const isSuccess = (result == null ? void 0 : result.success) === true;
+        const row = list.createDiv({
+          cls: `wechat-multiplatform-result-row ${isSuccess ? "is-success" : "is-error"}`
+        });
+        row.createEl("div", {
+          text: isSuccess ? "\u6210\u529F" : "\u5931\u8D25",
+          cls: `wechat-multiplatform-result-pill ${isSuccess ? "is-success" : "is-error"}`
+        });
+        const body = row.createDiv({ cls: "wechat-multiplatform-result-body" });
+        body.createEl("div", {
+          text: getPlatformName(result),
+          cls: "wechat-multiplatform-result-name"
+        });
+        body.createEl("div", {
+          text: isSuccess ? draftUrl ? "\u5DF2\u4FDD\u5B58\u4E3A\u8349\u7A3F\uFF0C\u8BF7\u6253\u5F00\u540E\u68C0\u67E5\u6392\u7248\u5E76\u624B\u52A8\u53D1\u5E03\u3002" : "\u5DF2\u540C\u6B65\u6210\u529F\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u6269\u5C55\u4E2D\u67E5\u770B\u8349\u7A3F\u3002" : errorMessage || "\u540C\u6B65\u5931\u8D25\uFF0C\u8BF7\u4FEE\u590D\u540E\u91CD\u8BD5\u3002",
+          cls: "wechat-multiplatform-result-detail"
+        });
+        if (isSuccess && draftUrl) {
+          const openBtn = row.createEl("button", {
+            text: "\u6253\u5F00\u8349\u7A3F",
+            cls: "wechat-multiplatform-inline-btn"
+          });
+          openBtn.onclick = () => this.openExternalUrl(draftUrl);
+        }
+      }
+    }
+    const btnRow = modal.contentEl.createDiv({ cls: "wechat-modal-buttons" });
+    if (fatalError || failedResults.length > 0) {
+      const retryBtn = btnRow.createEl("button", { text: "\u91CD\u65B0\u9009\u62E9\u5E73\u53F0" });
+      retryBtn.onclick = () => {
+        modal.close();
+        this.showMultiPlatformSyncModal();
+      };
+    }
+    const closeBtn = btnRow.createEl("button", {
+      text: isAllSuccess ? "\u5B8C\u6210" : "\u5173\u95ED",
+      cls: "mod-cta"
+    });
+    closeBtn.onclick = () => modal.close();
+    modal.open();
+  }
   async showMultiPlatformSyncModal() {
     var _a, _b, _c, _d, _e, _f;
     if (!this.currentHtml) {
@@ -15515,8 +15647,9 @@ var AppleStyleView = class extends ItemView {
       const notice = new Notice("\u6B63\u5728\u901A\u8FC7 Wechatsync \u540C\u6B65\u5230\u5176\u4ED6\u5E73\u53F0...", 0);
       try {
         const bridge = this.plugin.getWechatSyncBridgeService();
+        const requestedPlatformIds = Array.from(selectedPlatforms);
         const result = await bridge.syncArticle({
-          platforms: Array.from(selectedPlatforms),
+          platforms: requestedPlatformIds,
           title,
           markdown,
           content,
@@ -15524,8 +15657,7 @@ var AppleStyleView = class extends ItemView {
         });
         notice.hide();
         modal.close();
-        const results = Array.isArray(result == null ? void 0 : result.results) ? result.results : Array.isArray(result) ? result : [];
-        const successCount = results.filter((item) => item == null ? void 0 : item.success).length;
+        const results = Array.isArray(result == null ? void 0 : result.results) ? result.results : Array.isArray(result) ? result : result && typeof result === "object" && "success" in result ? [result] : [];
         const failedResults = results.filter((item) => item && item.success === false);
         const authFailedResults = failedResults.filter((item) => isWechatSyncAuthFailureMessage(getWechatSyncResultError(item)));
         const currentMultiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
@@ -15540,20 +15672,10 @@ var AppleStyleView = class extends ItemView {
           }
         });
         await this.plugin.saveSettings();
-        if (results.length > 0) {
-          if (failedResults.length > 0) {
-            const failedNames = failedResults.map((item) => item.platformName || item.platform || item.id).filter(Boolean).slice(0, 4).join("\u3001");
-            const suffix = failedResults.length > 4 ? ` \u7B49 ${failedResults.length} \u4E2A\u5E73\u53F0` : "";
-            new Notice(`\u26A0\uFE0F Wechatsync \u540C\u6B65\u5B8C\u6210\uFF1A${successCount}/${results.length} \u4E2A\u5E73\u53F0\u6210\u529F\uFF1B${failedNames}${suffix} \u5931\u8D25\uFF0C\u53EF\u4FEE\u590D\u540E\u91CD\u8BD5\u5931\u8D25\u5E73\u53F0\u3002`, 1e4);
-            if (authFailedResults.length > 0) {
-              new Notice("\u90E8\u5206\u5E73\u53F0\u767B\u5F55\u72B6\u6001\u53EF\u80FD\u5DF2\u5931\u6548\uFF0C\u5DF2\u66F4\u65B0\u7F13\u5B58\u3002\u8BF7\u5728\u6D4F\u89C8\u5668\u91CD\u65B0\u767B\u5F55\u540E\uFF0C\u5230\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u6D4B\u8BD5\u8FDE\u63A5\u3002", 1e4);
-            }
-          } else {
-            new Notice(`\u2705 Wechatsync \u540C\u6B65\u5B8C\u6210\uFF1A${successCount}/${results.length} \u4E2A\u5E73\u53F0\u6210\u529F`, 8e3);
-          }
-        } else {
-          new Notice("\u2705 \u5DF2\u53D1\u9001\u5230 Wechatsync\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u6269\u5C55\u4E2D\u67E5\u770B\u540C\u6B65\u7ED3\u679C", 8e3);
+        if (authFailedResults.length > 0) {
+          new Notice("\u90E8\u5206\u5E73\u53F0\u767B\u5F55\u72B6\u6001\u53EF\u80FD\u5DF2\u5931\u6548\uFF0C\u5DF2\u66F4\u65B0\u7F13\u5B58\u3002\u8BF7\u5728\u6D4F\u89C8\u5668\u91CD\u65B0\u767B\u5F55\u540E\uFF0C\u5230\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u6D4B\u8BD5\u8FDE\u63A5\u3002", 1e4);
         }
+        this.showMultiPlatformSyncResultModal({ results, requestedPlatformIds });
       } catch (error) {
         notice.hide();
         console.error("Wechatsync sync error:", error);
@@ -15570,7 +15692,12 @@ var AppleStyleView = class extends ItemView {
           });
           await this.plugin.saveSettings();
         }
+        modal.close();
         new Notice(`\u274C Wechatsync \u540C\u6B65\u5931\u8D25\uFF1A${error.message}`, 1e4);
+        this.showMultiPlatformSyncResultModal({
+          requestedPlatformIds: Array.from(selectedPlatforms),
+          fatalError: error
+        });
       }
     };
     modal.open();

@@ -118,6 +118,10 @@ function getWechatSyncResultError(result = {}) {
   return String(result.error || result.message || '').trim();
 }
 
+function getWechatSyncResultUrl(result = {}) {
+  return String(result.postUrl || result.draftUrl || result.editUrl || result.url || result.link || '').trim();
+}
+
 function isWechatSyncAuthFailureMessage(message = '') {
   return /未登录|登录|auth|unauthori[sz]ed|forbidden|cookie|token|鉴权|401|403/i.test(String(message || ''));
 }
@@ -3712,6 +3716,32 @@ class AppleStyleView extends ItemView {
     return true;
   }
 
+  openExternalUrl(url) {
+    const target = String(url || '').trim();
+    if (!/^https?:\/\//i.test(target)) {
+      new Notice('草稿链接不可用');
+      return false;
+    }
+
+    try {
+      const electron = require('electron');
+      if (electron?.shell?.openExternal) {
+        electron.shell.openExternal(target);
+        return true;
+      }
+    } catch {
+      // Mobile and some sandboxed runtimes do not expose Electron.
+    }
+
+    if (typeof window !== 'undefined' && typeof window.open === 'function') {
+      window.open(target, '_blank', 'noopener');
+      return true;
+    }
+
+    new Notice('无法打开草稿链接，请在浏览器扩展中查看同步结果');
+    return false;
+  }
+
   showAccountSetupEmptyState() {
     const { Modal } = require('obsidian');
     if (typeof Modal !== 'function') {
@@ -4027,6 +4057,133 @@ class AppleStyleView extends ItemView {
     modal.open();
   }
 
+  showMultiPlatformSyncResultModal({ results = [], requestedPlatformIds = [], fatalError = null } = {}) {
+    const { Modal } = require('obsidian');
+    if (typeof Modal !== 'function') {
+      const message = fatalError
+        ? `Wechatsync 同步失败：${fatalError.message || fatalError}`
+        : 'Wechatsync 同步完成，请在浏览器扩展中查看结果';
+      new Notice(message, 10000);
+      return;
+    }
+
+    const modal = new Modal(this.app);
+    const mobileSync = isMobileClient(this.app);
+    const bridgeSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const platformById = new Map(
+      (bridgeSettings.connection.platforms || [])
+        .map((platform) => normalizeWechatsyncPlatform(platform))
+        .filter(Boolean)
+        .map((platform) => [platform.id, platform])
+    );
+    const normalizedResults = Array.isArray(results) ? results.filter(Boolean) : [];
+    const successResults = normalizedResults.filter((item) => item?.success === true);
+    const failedResults = normalizedResults.filter((item) => item?.success === false);
+    const totalCount = normalizedResults.length || requestedPlatformIds.length;
+    const isAllSuccess = totalCount > 0 && !fatalError && successResults.length === totalCount;
+
+    modal.titleEl.setText('同步结果');
+    modal.titleEl.addClass?.('wechat-multiplatform-title');
+    modal.contentEl.addClass('wechat-sync-modal');
+    modal.contentEl.addClass('wechat-multiplatform-modal');
+    modal.contentEl.addClass('wechat-multiplatform-result-modal');
+    modal.modalEl?.addClass('wechat-publish-shell');
+    modal.modalEl?.addClass('wechat-multiplatform-shell');
+    if (mobileSync) {
+      modal.contentEl.addClass('wechat-sync-modal-mobile');
+      modal.modalEl?.addClass('wechat-sync-shell-mobile');
+    }
+
+    const getPlatformName = (result = {}) => {
+      const id = getWechatSyncResultPlatformId(result);
+      return result.platformName || result.name || platformById.get(id)?.name || id || '未知平台';
+    };
+
+    const summary = modal.contentEl.createDiv({
+      cls: `wechat-multiplatform-result-summary ${fatalError ? 'is-error' : (isAllSuccess ? 'is-success' : 'is-warning')}`,
+    });
+    summary.createEl('div', {
+      cls: 'wechat-multiplatform-result-summary-title',
+      text: fatalError
+        ? '同步没有完成'
+        : (isAllSuccess ? '草稿已保存' : '部分平台需要处理'),
+    });
+    summary.createEl('p', {
+      text: fatalError
+        ? (fatalError.message || 'Wechatsync 连接中断，请检查扩展、Token 或浏览器登录态后重试。')
+        : (normalizedResults.length > 0
+          ? `${successResults.length}/${normalizedResults.length} 个平台已保存为草稿。成功的平台可以直接打开草稿检查，失败的平台修复后重新同步。`
+          : '请求已发送到 Wechatsync 扩展。若这里没有返回平台明细，请在浏览器扩展中查看结果。'),
+    });
+
+    const list = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-result-list' });
+
+    if (fatalError) {
+      const row = list.createDiv({ cls: 'wechat-multiplatform-result-row is-error' });
+      const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
+      body.createEl('div', { text: 'Wechatsync 桥接', cls: 'wechat-multiplatform-result-name' });
+      body.createEl('div', {
+        text: fatalError.message || '连接不可用',
+        cls: 'wechat-multiplatform-result-detail',
+      });
+    } else if (normalizedResults.length === 0) {
+      const row = list.createDiv({ cls: 'wechat-multiplatform-result-row' });
+      const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
+      body.createEl('div', { text: '等待扩展结果', cls: 'wechat-multiplatform-result-name' });
+      body.createEl('div', {
+        text: '当前桥接没有返回平台明细。请在浏览器扩展侧确认草稿是否已生成。',
+        cls: 'wechat-multiplatform-result-detail',
+      });
+    } else {
+      for (const result of normalizedResults) {
+        const draftUrl = getWechatSyncResultUrl(result);
+        const errorMessage = getWechatSyncResultError(result);
+        const isSuccess = result?.success === true;
+        const row = list.createDiv({
+          cls: `wechat-multiplatform-result-row ${isSuccess ? 'is-success' : 'is-error'}`,
+        });
+        row.createEl('div', {
+          text: isSuccess ? '成功' : '失败',
+          cls: `wechat-multiplatform-result-pill ${isSuccess ? 'is-success' : 'is-error'}`,
+        });
+        const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
+        body.createEl('div', {
+          text: getPlatformName(result),
+          cls: 'wechat-multiplatform-result-name',
+        });
+        body.createEl('div', {
+          text: isSuccess
+            ? (draftUrl ? '已保存为草稿，请打开后检查排版并手动发布。' : '已同步成功，请在浏览器扩展中查看草稿。')
+            : (errorMessage || '同步失败，请修复后重试。'),
+          cls: 'wechat-multiplatform-result-detail',
+        });
+        if (isSuccess && draftUrl) {
+          const openBtn = row.createEl('button', {
+            text: '打开草稿',
+            cls: 'wechat-multiplatform-inline-btn',
+          });
+          openBtn.onclick = () => this.openExternalUrl(draftUrl);
+        }
+      }
+    }
+
+    const btnRow = modal.contentEl.createDiv({ cls: 'wechat-modal-buttons' });
+    if (fatalError || failedResults.length > 0) {
+      const retryBtn = btnRow.createEl('button', { text: '重新选择平台' });
+      retryBtn.onclick = () => {
+        modal.close();
+        this.showMultiPlatformSyncModal();
+      };
+    }
+    const closeBtn = btnRow.createEl('button', {
+      text: isAllSuccess ? '完成' : '关闭',
+      cls: 'mod-cta',
+    });
+    closeBtn.onclick = () => modal.close();
+
+    modal.open();
+  }
+
   async showMultiPlatformSyncModal() {
     if (!this.currentHtml) {
       new Notice(this.getMissingRenderNotice());
@@ -4219,8 +4376,9 @@ class AppleStyleView extends ItemView {
       const notice = new Notice('正在通过 Wechatsync 同步到其他平台...', 0);
       try {
         const bridge = this.plugin.getWechatSyncBridgeService();
+        const requestedPlatformIds = Array.from(selectedPlatforms);
         const result = await bridge.syncArticle({
-          platforms: Array.from(selectedPlatforms),
+          platforms: requestedPlatformIds,
           title,
           markdown,
           content,
@@ -4228,8 +4386,9 @@ class AppleStyleView extends ItemView {
         });
         notice.hide();
         modal.close();
-        const results = Array.isArray(result?.results) ? result.results : (Array.isArray(result) ? result : []);
-        const successCount = results.filter((item) => item?.success).length;
+        const results = Array.isArray(result?.results)
+          ? result.results
+          : (Array.isArray(result) ? result : (result && typeof result === 'object' && 'success' in result ? [result] : []));
         const failedResults = results.filter((item) => item && item.success === false);
         const authFailedResults = failedResults.filter((item) => isWechatSyncAuthFailureMessage(getWechatSyncResultError(item)));
         const currentMultiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
@@ -4245,24 +4404,10 @@ class AppleStyleView extends ItemView {
         });
         await this.plugin.saveSettings();
 
-        if (results.length > 0) {
-          if (failedResults.length > 0) {
-            const failedNames = failedResults
-              .map((item) => item.platformName || item.platform || item.id)
-              .filter(Boolean)
-              .slice(0, 4)
-              .join('、');
-            const suffix = failedResults.length > 4 ? ` 等 ${failedResults.length} 个平台` : '';
-            new Notice(`⚠️ Wechatsync 同步完成：${successCount}/${results.length} 个平台成功；${failedNames}${suffix} 失败，可修复后重试失败平台。`, 10000);
-            if (authFailedResults.length > 0) {
-              new Notice('部分平台登录状态可能已失效，已更新缓存。请在浏览器重新登录后，到插件设置中测试连接。', 10000);
-            }
-          } else {
-            new Notice(`✅ Wechatsync 同步完成：${successCount}/${results.length} 个平台成功`, 8000);
-          }
-        } else {
-          new Notice('✅ 已发送到 Wechatsync，请在浏览器扩展中查看同步结果', 8000);
+        if (authFailedResults.length > 0) {
+          new Notice('部分平台登录状态可能已失效，已更新缓存。请在浏览器重新登录后，到插件设置中测试连接。', 10000);
         }
+        this.showMultiPlatformSyncResultModal({ results, requestedPlatformIds });
       } catch (error) {
         notice.hide();
         console.error('Wechatsync sync error:', error);
@@ -4279,7 +4424,12 @@ class AppleStyleView extends ItemView {
           });
           await this.plugin.saveSettings();
         }
+        modal.close();
         new Notice(`❌ Wechatsync 同步失败：${error.message}`, 10000);
+        this.showMultiPlatformSyncResultModal({
+          requestedPlatformIds: Array.from(selectedPlatforms),
+          fatalError: error,
+        });
       }
     };
 
