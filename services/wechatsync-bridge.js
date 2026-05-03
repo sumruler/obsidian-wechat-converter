@@ -1,6 +1,204 @@
 const DEFAULT_WECHATSYNC_PORT = 9527;
 const DEFAULT_REQUEST_TIMEOUT_MS = 360000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 60000;
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+
+function createEmitter() {
+  const listeners = new Map();
+  return {
+    on(event, handler) {
+      const handlers = listeners.get(event) || [];
+      handlers.push(handler);
+      listeners.set(event, handlers);
+      return this;
+    },
+    once(event, handler) {
+      const wrapped = (...args) => {
+        this.off(event, wrapped);
+        handler(...args);
+      };
+      return this.on(event, wrapped);
+    },
+    off(event, handler) {
+      const handlers = listeners.get(event) || [];
+      listeners.set(event, handlers.filter((item) => item !== handler));
+      return this;
+    },
+    emit(event, ...args) {
+      const handlers = listeners.get(event) || [];
+      for (const handler of handlers.slice()) {
+        handler(...args);
+      }
+    },
+  };
+}
+
+function encodeWebSocketTextFrame(text) {
+  const payload = Buffer.from(String(text));
+  const length = payload.length;
+  let header;
+  if (length < 126) {
+    header = Buffer.from([0x81, length]);
+  } else if (length < 65536) {
+    header = Buffer.alloc(4);
+    header[0] = 0x81;
+    header[1] = 126;
+    header.writeUInt16BE(length, 2);
+  } else {
+    header = Buffer.alloc(10);
+    header[0] = 0x81;
+    header[1] = 127;
+    header.writeBigUInt64BE(BigInt(length), 2);
+  }
+  return Buffer.concat([header, payload]);
+}
+
+function parseWebSocketFrames(buffer) {
+  const messages = [];
+  let offset = 0;
+
+  while (offset + 2 <= buffer.length) {
+    const firstByte = buffer[offset];
+    const secondByte = buffer[offset + 1];
+    const opcode = firstByte & 0x0f;
+    const masked = (secondByte & 0x80) === 0x80;
+    let payloadLength = secondByte & 0x7f;
+    let cursor = offset + 2;
+
+    if (payloadLength === 126) {
+      if (cursor + 2 > buffer.length) break;
+      payloadLength = buffer.readUInt16BE(cursor);
+      cursor += 2;
+    } else if (payloadLength === 127) {
+      if (cursor + 8 > buffer.length) break;
+      const longLength = buffer.readBigUInt64BE(cursor);
+      if (longLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error('WebSocket frame is too large.');
+      }
+      payloadLength = Number(longLength);
+      cursor += 8;
+    }
+
+    let mask = null;
+    if (masked) {
+      if (cursor + 4 > buffer.length) break;
+      mask = buffer.subarray(cursor, cursor + 4);
+      cursor += 4;
+    }
+
+    if (cursor + payloadLength > buffer.length) break;
+    const payload = Buffer.from(buffer.subarray(cursor, cursor + payloadLength));
+    if (mask) {
+      for (let i = 0; i < payload.length; i++) {
+        payload[i] = payload[i] ^ mask[i % 4];
+      }
+    }
+
+    if (opcode === 0x1) {
+      messages.push(payload.toString('utf8'));
+    }
+    offset = cursor + payloadLength;
+  }
+
+  return {
+    messages,
+    remaining: buffer.subarray(offset),
+  };
+}
+
+function createSocketWrapper(socket) {
+  const emitter = createEmitter();
+  const wrapper = {
+    readyState: 1,
+    on: emitter.on.bind(emitter),
+    once: emitter.once.bind(emitter),
+    off: emitter.off.bind(emitter),
+    send(data) {
+      if (wrapper.readyState !== 1) return;
+      socket.write(encodeWebSocketTextFrame(data));
+    },
+    close() {
+      wrapper.readyState = 3;
+      socket.end();
+    },
+  };
+
+  let buffered = Buffer.alloc(0);
+  socket.on('data', (chunk) => {
+    try {
+      buffered = Buffer.concat([buffered, chunk]);
+      const result = parseWebSocketFrames(buffered);
+      buffered = result.remaining;
+      for (const message of result.messages) {
+        emitter.emit('message', Buffer.from(message));
+      }
+    } catch (error) {
+      emitter.emit('error', error);
+      socket.destroy();
+    }
+  });
+  socket.on('close', () => {
+    wrapper.readyState = 3;
+    emitter.emit('close');
+  });
+  socket.on('error', (error) => {
+    wrapper.readyState = 3;
+    emitter.emit('error', error);
+  });
+
+  return wrapper;
+}
+
+function createMinimalWebSocketServer({ http, port, logger = console }) {
+  const crypto = require('crypto');
+  const emitter = createEmitter();
+  const server = http.createServer();
+  const sockets = new Set();
+
+  server.on('upgrade', (req, socket) => {
+    const key = req.headers['sec-websocket-key'];
+    if (!key) {
+      socket.destroy();
+      return;
+    }
+
+    const accept = crypto
+      .createHash('sha1')
+      .update(`${key}${WS_GUID}`)
+      .digest('base64');
+    socket.write([
+      'HTTP/1.1 101 Switching Protocols',
+      'Upgrade: websocket',
+      'Connection: Upgrade',
+      `Sec-WebSocket-Accept: ${accept}`,
+      '',
+      '',
+    ].join('\r\n'));
+
+    const wrapped = createSocketWrapper(socket);
+    sockets.add(wrapped);
+    wrapped.on('close', () => sockets.delete(wrapped));
+    emitter.emit('connection', wrapped);
+  });
+  server.on('error', (error) => emitter.emit('error', error));
+  server.listen(port, () => emitter.emit('listening'));
+
+  return {
+    on: emitter.on.bind(emitter),
+    once: emitter.once.bind(emitter),
+    off: emitter.off.bind(emitter),
+    close(callback) {
+      for (const socket of sockets) {
+        try {
+          socket.close();
+        } catch (error) {
+          logger.warn?.('Failed to close Wechatsync socket:', error);
+        }
+      }
+      server.close(callback);
+    },
+  };
+}
 
 function getWebSocketOpenState(WebSocketServer) {
   return WebSocketServer?.OPEN || WebSocketServer?.WebSocket?.OPEN || 1;
@@ -52,9 +250,6 @@ function createWechatSyncBridgeService(options = {}) {
     idFactory = () => `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
   } = options;
 
-  if (!WebSocketServer) {
-    throw new Error('WebSocketServer is required to create Wechatsync bridge service.');
-  }
   if (!http) {
     throw new Error('http module is required to create Wechatsync bridge service.');
   }
@@ -126,7 +321,9 @@ function createWechatSyncBridgeService(options = {}) {
   async function startServer() {
     await new Promise((resolve, reject) => {
       try {
-        wss = new WebSocketServer({ port });
+        wss = WebSocketServer
+          ? new WebSocketServer({ port })
+          : createMinimalWebSocketServer({ http, port, logger });
       } catch (error) {
         reject(error);
         return;

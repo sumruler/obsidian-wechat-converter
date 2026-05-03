@@ -10216,6 +10216,190 @@ var require_wechatsync_bridge = __commonJS({
     var DEFAULT_WECHATSYNC_PORT2 = 9527;
     var DEFAULT_REQUEST_TIMEOUT_MS = 36e4;
     var DEFAULT_CONNECT_TIMEOUT_MS = 6e4;
+    var WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    function createEmitter() {
+      const listeners = /* @__PURE__ */ new Map();
+      return {
+        on(event, handler) {
+          const handlers = listeners.get(event) || [];
+          handlers.push(handler);
+          listeners.set(event, handlers);
+          return this;
+        },
+        once(event, handler) {
+          const wrapped = (...args) => {
+            this.off(event, wrapped);
+            handler(...args);
+          };
+          return this.on(event, wrapped);
+        },
+        off(event, handler) {
+          const handlers = listeners.get(event) || [];
+          listeners.set(event, handlers.filter((item) => item !== handler));
+          return this;
+        },
+        emit(event, ...args) {
+          const handlers = listeners.get(event) || [];
+          for (const handler of handlers.slice()) {
+            handler(...args);
+          }
+        }
+      };
+    }
+    function encodeWebSocketTextFrame(text) {
+      const payload = Buffer.from(String(text));
+      const length = payload.length;
+      let header;
+      if (length < 126) {
+        header = Buffer.from([129, length]);
+      } else if (length < 65536) {
+        header = Buffer.alloc(4);
+        header[0] = 129;
+        header[1] = 126;
+        header.writeUInt16BE(length, 2);
+      } else {
+        header = Buffer.alloc(10);
+        header[0] = 129;
+        header[1] = 127;
+        header.writeBigUInt64BE(BigInt(length), 2);
+      }
+      return Buffer.concat([header, payload]);
+    }
+    function parseWebSocketFrames(buffer) {
+      const messages = [];
+      let offset = 0;
+      while (offset + 2 <= buffer.length) {
+        const firstByte = buffer[offset];
+        const secondByte = buffer[offset + 1];
+        const opcode = firstByte & 15;
+        const masked = (secondByte & 128) === 128;
+        let payloadLength = secondByte & 127;
+        let cursor = offset + 2;
+        if (payloadLength === 126) {
+          if (cursor + 2 > buffer.length)
+            break;
+          payloadLength = buffer.readUInt16BE(cursor);
+          cursor += 2;
+        } else if (payloadLength === 127) {
+          if (cursor + 8 > buffer.length)
+            break;
+          const longLength = buffer.readBigUInt64BE(cursor);
+          if (longLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+            throw new Error("WebSocket frame is too large.");
+          }
+          payloadLength = Number(longLength);
+          cursor += 8;
+        }
+        let mask = null;
+        if (masked) {
+          if (cursor + 4 > buffer.length)
+            break;
+          mask = buffer.subarray(cursor, cursor + 4);
+          cursor += 4;
+        }
+        if (cursor + payloadLength > buffer.length)
+          break;
+        const payload = Buffer.from(buffer.subarray(cursor, cursor + payloadLength));
+        if (mask) {
+          for (let i = 0; i < payload.length; i++) {
+            payload[i] = payload[i] ^ mask[i % 4];
+          }
+        }
+        if (opcode === 1) {
+          messages.push(payload.toString("utf8"));
+        }
+        offset = cursor + payloadLength;
+      }
+      return {
+        messages,
+        remaining: buffer.subarray(offset)
+      };
+    }
+    function createSocketWrapper(socket) {
+      const emitter = createEmitter();
+      const wrapper = {
+        readyState: 1,
+        on: emitter.on.bind(emitter),
+        once: emitter.once.bind(emitter),
+        off: emitter.off.bind(emitter),
+        send(data) {
+          if (wrapper.readyState !== 1)
+            return;
+          socket.write(encodeWebSocketTextFrame(data));
+        },
+        close() {
+          wrapper.readyState = 3;
+          socket.end();
+        }
+      };
+      let buffered = Buffer.alloc(0);
+      socket.on("data", (chunk) => {
+        try {
+          buffered = Buffer.concat([buffered, chunk]);
+          const result = parseWebSocketFrames(buffered);
+          buffered = result.remaining;
+          for (const message of result.messages) {
+            emitter.emit("message", Buffer.from(message));
+          }
+        } catch (error) {
+          emitter.emit("error", error);
+          socket.destroy();
+        }
+      });
+      socket.on("close", () => {
+        wrapper.readyState = 3;
+        emitter.emit("close");
+      });
+      socket.on("error", (error) => {
+        wrapper.readyState = 3;
+        emitter.emit("error", error);
+      });
+      return wrapper;
+    }
+    function createMinimalWebSocketServer({ http, port, logger = console }) {
+      const crypto = require("crypto");
+      const emitter = createEmitter();
+      const server = http.createServer();
+      const sockets = /* @__PURE__ */ new Set();
+      server.on("upgrade", (req, socket) => {
+        const key = req.headers["sec-websocket-key"];
+        if (!key) {
+          socket.destroy();
+          return;
+        }
+        const accept = crypto.createHash("sha1").update(`${key}${WS_GUID}`).digest("base64");
+        socket.write([
+          "HTTP/1.1 101 Switching Protocols",
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          `Sec-WebSocket-Accept: ${accept}`,
+          "",
+          ""
+        ].join("\r\n"));
+        const wrapped = createSocketWrapper(socket);
+        sockets.add(wrapped);
+        wrapped.on("close", () => sockets.delete(wrapped));
+        emitter.emit("connection", wrapped);
+      });
+      server.on("error", (error) => emitter.emit("error", error));
+      server.listen(port, () => emitter.emit("listening"));
+      return {
+        on: emitter.on.bind(emitter),
+        once: emitter.once.bind(emitter),
+        off: emitter.off.bind(emitter),
+        close(callback) {
+          var _a;
+          for (const socket of sockets) {
+            try {
+              socket.close();
+            } catch (error) {
+              (_a = logger.warn) == null ? void 0 : _a.call(logger, "Failed to close Wechatsync socket:", error);
+            }
+          }
+          server.close(callback);
+        }
+      };
+    }
     function getWebSocketOpenState(WebSocketServer) {
       var _a;
       return (WebSocketServer == null ? void 0 : WebSocketServer.OPEN) || ((_a = WebSocketServer == null ? void 0 : WebSocketServer.WebSocket) == null ? void 0 : _a.OPEN) || 1;
@@ -10263,9 +10447,6 @@ var require_wechatsync_bridge = __commonJS({
         logger = console,
         idFactory = () => `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`
       } = options;
-      if (!WebSocketServer) {
-        throw new Error("WebSocketServer is required to create Wechatsync bridge service.");
-      }
       if (!http) {
         throw new Error("http module is required to create Wechatsync bridge service.");
       }
@@ -10328,7 +10509,7 @@ var require_wechatsync_bridge = __commonJS({
       async function startServer() {
         await new Promise((resolve, reject) => {
           try {
-            wss = new WebSocketServer({ port });
+            wss = WebSocketServer ? new WebSocketServer({ port }) : createMinimalWebSocketServer({ http, port, logger });
           } catch (error) {
             reject(error);
             return;
@@ -11626,18 +11807,6 @@ var require_obsidian_fetch_adapter = __commonJS({
       createObsidianFetchAdapter: createObsidianFetchAdapter2,
       isJsonParseFailure,
       parseJsonResponseText
-    };
-  }
-});
-
-// node_modules/ws/browser.js
-var require_browser = __commonJS({
-  "node_modules/ws/browser.js"(exports2, module2) {
-    "use strict";
-    module2.exports = function() {
-      throw new Error(
-        "ws does not work in the browser. Browser clients must use the native WebSocket object"
-      );
     };
   }
 });
@@ -15102,7 +15271,7 @@ var AppleStyleView = class extends ItemView {
     };
   }
   async showMultiPlatformSyncModal() {
-    var _a, _b;
+    var _a, _b, _c, _d, _e;
     if (!this.currentHtml) {
       new Notice(this.getMissingRenderNotice());
       return;
@@ -15111,12 +15280,14 @@ var AppleStyleView = class extends ItemView {
     const modal = new Modal(this.app);
     const mobileSync = isMobileClient(this.app);
     const bridgeSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
-    modal.titleEl.setText("\u5176\u4ED6\u5E73\u53F0\u5206\u53D1\uFF08Beta\uFF09");
+    modal.titleEl.setText("\u53D1\u5E03\u4E0E\u5206\u53D1");
+    (_b = (_a = modal.titleEl).addClass) == null ? void 0 : _b.call(_a, "wechat-multiplatform-title");
     modal.contentEl.addClass("wechat-sync-modal");
     modal.contentEl.addClass("wechat-multiplatform-modal");
+    (_c = modal.modalEl) == null ? void 0 : _c.addClass("wechat-multiplatform-shell");
     if (mobileSync) {
       modal.contentEl.addClass("wechat-sync-modal-mobile");
-      (_a = modal.modalEl) == null ? void 0 : _a.addClass("wechat-sync-shell-mobile");
+      (_d = modal.modalEl) == null ? void 0 : _d.addClass("wechat-sync-shell-mobile");
     }
     const publishModeTabs = modal.contentEl.createDiv({ cls: "wechat-publish-mode-tabs" });
     const wechatTab = publishModeTabs.createEl("button", { text: "\u5FAE\u4FE1\u8349\u7A3F\u7BB1", cls: "wechat-publish-mode-tab" });
@@ -15126,13 +15297,15 @@ var AppleStyleView = class extends ItemView {
       this.showSyncModal();
     };
     const intro = modal.contentEl.createDiv({ cls: "wechat-multiplatform-intro" });
-    intro.createEl("p", {
-      text: "\u901A\u8FC7 Wechatsync \u6D4F\u89C8\u5668\u6269\u5C55\u540C\u6B65\u5230\u77E5\u4E4E\u3001\u6398\u91D1\u3001CSDN \u7B49\u5E73\u53F0\u8349\u7A3F\u3002\u5FAE\u4FE1\u4ECD\u4F7F\u7528\u672C\u63D2\u4EF6\u81EA\u5DF1\u7684\u516C\u4F17\u53F7 API \u94FE\u8DEF\u3002"
+    const introText = intro.createDiv({ cls: "wechat-multiplatform-intro-text" });
+    introText.createEl("div", {
+      text: "\u5176\u4ED6\u5E73\u53F0\u7531 Wechatsync \u6269\u5C55\u63A5\u7BA1",
+      cls: "wechat-multiplatform-kicker"
     });
-    intro.createEl("p", {
-      text: "\u8BF7\u5728\u5DF2\u767B\u5F55\u76EE\u6807\u5E73\u53F0\u7684 Chromium \u6D4F\u89C8\u5668\u4E2D\u542F\u7528 Wechatsync \u6269\u5C55\u7684 MCP/\u6865\u63A5\u529F\u80FD\u3002",
-      cls: "setting-item-description"
+    introText.createEl("p", {
+      text: "\u5FAE\u4FE1\u4ECD\u4F7F\u7528\u672C\u63D2\u4EF6\u81EA\u5DF1\u7684\u516C\u4F17\u53F7 API\u3002\u77E5\u4E4E\u3001\u6398\u91D1\u3001CSDN \u7B49\u5E73\u53F0\u4F1A\u901A\u8FC7\u6D4F\u89C8\u5668\u767B\u5F55\u6001\u4FDD\u5B58\u4E3A\u8349\u7A3F\u3002"
     });
+    intro.createEl("div", { text: "Beta", cls: "wechat-multiplatform-badge" });
     if (!bridgeSettings.enabled) {
       const disabledHint = modal.contentEl.createDiv({ cls: "wechat-sync-empty-state" });
       disabledHint.createEl("div", { cls: "wechat-sync-empty-icon", text: "\u2197" });
@@ -15148,10 +15321,9 @@ var AppleStyleView = class extends ItemView {
       modal.open();
       return;
     }
-    const statusEl = modal.contentEl.createDiv({
-      cls: "wechat-multiplatform-status",
-      text: "\u7B49\u5F85\u68C0\u6D4B Wechatsync \u6269\u5C55\u8FDE\u63A5..."
-    });
+    const statusEl = modal.contentEl.createDiv({ cls: "wechat-multiplatform-status" });
+    statusEl.createEl("span", { text: "\u5F85\u68C0\u6D4B", cls: "wechat-multiplatform-status-dot" });
+    statusEl.createEl("span", { text: "\u6253\u5F00 Wechatsync \u6269\u5C55\u91CC\u7684\u300CCLI / MCP \u8FDE\u63A5\u300D\uFF0C\u7136\u540E\u68C0\u6D4B\u5E73\u53F0\u3002", cls: "wechat-multiplatform-status-text" });
     const platformListEl = modal.contentEl.createDiv({ cls: "wechat-multiplatform-list" });
     const selectedPlatforms = /* @__PURE__ */ new Set();
     const btnRow = modal.contentEl.createDiv({ cls: "wechat-modal-buttons" });
@@ -15159,7 +15331,7 @@ var AppleStyleView = class extends ItemView {
     const cancelBtn = btnRow.createEl("button", { text: "\u53D6\u6D88" });
     const syncBtn = btnRow.createEl("button", { text: "\u540C\u6B65\u5230\u9009\u4E2D\u5E73\u53F0", cls: "mod-cta" });
     syncBtn.disabled = true;
-    (_b = syncBtn.addClass) == null ? void 0 : _b.call(syncBtn, "apple-btn-disabled");
+    (_e = syncBtn.addClass) == null ? void 0 : _e.call(syncBtn, "apple-btn-disabled");
     cancelBtn.onclick = () => modal.close();
     const renderPlatforms = (platforms = []) => {
       var _a2;
@@ -15167,10 +15339,9 @@ var AppleStyleView = class extends ItemView {
       selectedPlatforms.clear();
       const normalizedPlatforms = platforms.map((platform) => this.normalizeWechatsyncPlatform(platform)).filter(Boolean);
       if (normalizedPlatforms.length === 0) {
-        platformListEl.createEl("p", {
-          text: "\u672A\u68C0\u6D4B\u5230\u53EF\u7528\u5E73\u53F0\u3002\u8BF7\u786E\u8BA4 Wechatsync \u6269\u5C55\u5DF2\u8FDE\u63A5\uFF0C\u5E76\u4E14\u76EE\u6807\u5E73\u53F0\u5DF2\u767B\u5F55\u3002",
-          cls: "setting-item-description"
-        });
+        const empty = platformListEl.createDiv({ cls: "wechat-multiplatform-state" });
+        empty.createEl("div", { text: "\u8FD8\u6CA1\u6709\u53EF\u5206\u53D1\u7684\u5E73\u53F0", cls: "wechat-multiplatform-state-title" });
+        empty.createEl("p", { text: "\u8BF7\u5728\u6D4F\u89C8\u5668\u4E2D\u767B\u5F55\u76EE\u6807\u5E73\u53F0\uFF0C\u5E76\u786E\u8BA4 Wechatsync \u6269\u5C55\u80FD\u8BC6\u522B\u8D26\u53F7\u3002" });
         syncBtn.disabled = true;
         (_a2 = syncBtn.addClass) == null ? void 0 : _a2.call(syncBtn, "apple-btn-disabled");
         return;
@@ -15207,22 +15378,32 @@ var AppleStyleView = class extends ItemView {
     const refreshPlatforms = async () => {
       var _a2;
       refreshBtn.disabled = true;
-      statusEl.setText("\u6B63\u5728\u68C0\u6D4B Wechatsync \u6269\u5C55\u8FDE\u63A5...");
+      statusEl.empty();
+      statusEl.createEl("span", { text: "\u68C0\u6D4B\u4E2D", cls: "wechat-multiplatform-status-dot is-loading" });
+      statusEl.createEl("span", { text: "\u6B63\u5728\u8FDE\u63A5\u672C\u5730\u6865\u63A5\uFF0C\u5E76\u7B49\u5F85\u6D4F\u89C8\u5668\u6269\u5C55\u54CD\u5E94\u3002", cls: "wechat-multiplatform-status-text" });
       try {
         const bridge = this.plugin.getWechatSyncBridgeService();
         await bridge.start();
         await bridge.waitForConnection(3e3);
         const platforms = await bridge.listPlatforms({ forceRefresh: true });
         renderPlatforms(Array.isArray(platforms) ? platforms : []);
-        statusEl.setText("\u5DF2\u8FDE\u63A5 Wechatsync \u6269\u5C55\uFF0C\u8BF7\u9009\u62E9\u8981\u540C\u6B65\u7684\u5E73\u53F0\u3002");
+        statusEl.empty();
+        statusEl.createEl("span", { text: "\u5DF2\u8FDE\u63A5", cls: "wechat-multiplatform-status-dot is-ok" });
+        statusEl.createEl("span", { text: "\u9009\u62E9\u8981\u4FDD\u5B58\u8349\u7A3F\u7684\u5E73\u53F0\u3002\u5FAE\u4FE1\u4E0D\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC\u3002", cls: "wechat-multiplatform-status-text" });
       } catch (error) {
         console.error("Wechatsync bridge error:", error);
         platformListEl.empty();
-        platformListEl.createEl("p", {
-          text: error.message || "Wechatsync \u6269\u5C55\u8FDE\u63A5\u5931\u8D25\u3002",
-          cls: "setting-item-description"
+        const failure = platformListEl.createDiv({ cls: "wechat-multiplatform-state is-error" });
+        failure.createEl("div", { text: "\u8FD8\u6CA1\u8FDE\u4E0A Wechatsync \u6269\u5C55", cls: "wechat-multiplatform-state-title" });
+        failure.createEl("p", {
+          text: error.message || "\u8BF7\u786E\u8BA4\u6D4F\u89C8\u5668\u6269\u5C55\u5DF2\u7ECF\u542F\u7528 CLI / MCP \u8FDE\u63A5\u3002"
         });
-        statusEl.setText("\u8FDE\u63A5\u5931\u8D25");
+        const steps = failure.createEl("ol", { cls: "wechat-multiplatform-steps" });
+        steps.createEl("li", { text: "\u5728 Wechatsync \u6269\u5C55\u8BBE\u7F6E\u4E2D\u6253\u5F00\u300CCLI / MCP \u8FDE\u63A5\u300D\u3002" });
+        steps.createEl("li", { text: "\u4FDD\u6301\u8FD9\u4E2A\u6D4F\u89C8\u5668\u6253\u5F00\uFF0C\u5E76\u786E\u8BA4\u76EE\u6807\u5E73\u53F0\u5DF2\u767B\u5F55\u3002" });
+        statusEl.empty();
+        statusEl.createEl("span", { text: "\u672A\u8FDE\u63A5", cls: "wechat-multiplatform-status-dot is-error" });
+        statusEl.createEl("span", { text: "\u6269\u5C55\u672A\u54CD\u5E94\uFF0C\u6309\u4E0B\u65B9\u63D0\u793A\u5904\u7406\u540E\u91CD\u65B0\u68C0\u6D4B\u3002", cls: "wechat-multiplatform-status-text" });
         syncBtn.disabled = true;
         (_a2 = syncBtn.addClass) == null ? void 0 : _a2.call(syncBtn, "apple-btn-disabled");
       } finally {
@@ -16931,11 +17112,9 @@ var AppleStylePlugin = class extends Plugin {
         console.warn("\u505C\u6B62\u65E7 Wechatsync \u6865\u63A5\u5931\u8D25:", error);
       });
     }
-    const { WebSocketServer } = require_browser();
     const http = require("http");
     this._wechatSyncBridgeCacheKey = cacheKey;
     this._wechatSyncBridgeService = createWechatSyncBridgeService({
-      WebSocketServer,
       http,
       port: settings.port,
       token: settings.token

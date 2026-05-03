@@ -3958,9 +3958,11 @@ class AppleStyleView extends ItemView {
     const modal = new Modal(this.app);
     const mobileSync = isMobileClient(this.app);
     const bridgeSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
-    modal.titleEl.setText('其他平台分发（Beta）');
+    modal.titleEl.setText('发布与分发');
+    modal.titleEl.addClass?.('wechat-multiplatform-title');
     modal.contentEl.addClass('wechat-sync-modal');
     modal.contentEl.addClass('wechat-multiplatform-modal');
+    modal.modalEl?.addClass('wechat-multiplatform-shell');
     if (mobileSync) {
       modal.contentEl.addClass('wechat-sync-modal-mobile');
       modal.modalEl?.addClass('wechat-sync-shell-mobile');
@@ -3975,13 +3977,15 @@ class AppleStyleView extends ItemView {
     };
 
     const intro = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-intro' });
-    intro.createEl('p', {
-      text: '通过 Wechatsync 浏览器扩展同步到知乎、掘金、CSDN 等平台草稿。微信仍使用本插件自己的公众号 API 链路。',
+    const introText = intro.createDiv({ cls: 'wechat-multiplatform-intro-text' });
+    introText.createEl('div', {
+      text: '其他平台由 Wechatsync 扩展接管',
+      cls: 'wechat-multiplatform-kicker',
     });
-    intro.createEl('p', {
-      text: '请在已登录目标平台的 Chromium 浏览器中启用 Wechatsync 扩展的 MCP/桥接功能。',
-      cls: 'setting-item-description',
+    introText.createEl('p', {
+      text: '微信仍使用本插件自己的公众号 API。知乎、掘金、CSDN 等平台会通过浏览器登录态保存为草稿。',
     });
+    intro.createEl('div', { text: 'Beta', cls: 'wechat-multiplatform-badge' });
 
     if (!bridgeSettings.enabled) {
       const disabledHint = modal.contentEl.createDiv({ cls: 'wechat-sync-empty-state' });
@@ -3999,10 +4003,9 @@ class AppleStyleView extends ItemView {
       return;
     }
 
-    const statusEl = modal.contentEl.createDiv({
-      cls: 'wechat-multiplatform-status',
-      text: '等待检测 Wechatsync 扩展连接...',
-    });
+    const statusEl = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-status' });
+    statusEl.createEl('span', { text: '待检测', cls: 'wechat-multiplatform-status-dot' });
+    statusEl.createEl('span', { text: '打开 Wechatsync 扩展里的「CLI / MCP 连接」，然后检测平台。', cls: 'wechat-multiplatform-status-text' });
     const platformListEl = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-list' });
     const selectedPlatforms = new Set();
 
@@ -4022,10 +4025,9 @@ class AppleStyleView extends ItemView {
         .filter(Boolean);
 
       if (normalizedPlatforms.length === 0) {
-        platformListEl.createEl('p', {
-          text: '未检测到可用平台。请确认 Wechatsync 扩展已连接，并且目标平台已登录。',
-          cls: 'setting-item-description',
-        });
+        const empty = platformListEl.createDiv({ cls: 'wechat-multiplatform-state' });
+        empty.createEl('div', { text: '还没有可分发的平台', cls: 'wechat-multiplatform-state-title' });
+        empty.createEl('p', { text: '请在浏览器中登录目标平台，并确认 Wechatsync 扩展能识别账号。' });
         syncBtn.disabled = true;
         syncBtn.addClass?.('apple-btn-disabled');
         return;
@@ -4061,22 +4063,32 @@ class AppleStyleView extends ItemView {
 
     const refreshPlatforms = async () => {
       refreshBtn.disabled = true;
-      statusEl.setText('正在检测 Wechatsync 扩展连接...');
+      statusEl.empty();
+      statusEl.createEl('span', { text: '检测中', cls: 'wechat-multiplatform-status-dot is-loading' });
+      statusEl.createEl('span', { text: '正在连接本地桥接，并等待浏览器扩展响应。', cls: 'wechat-multiplatform-status-text' });
       try {
         const bridge = this.plugin.getWechatSyncBridgeService();
         await bridge.start();
         await bridge.waitForConnection(3000);
         const platforms = await bridge.listPlatforms({ forceRefresh: true });
         renderPlatforms(Array.isArray(platforms) ? platforms : []);
-        statusEl.setText('已连接 Wechatsync 扩展，请选择要同步的平台。');
+        statusEl.empty();
+        statusEl.createEl('span', { text: '已连接', cls: 'wechat-multiplatform-status-dot is-ok' });
+        statusEl.createEl('span', { text: '选择要保存草稿的平台。微信不会出现在这里。', cls: 'wechat-multiplatform-status-text' });
       } catch (error) {
         console.error('Wechatsync bridge error:', error);
         platformListEl.empty();
-        platformListEl.createEl('p', {
-          text: error.message || 'Wechatsync 扩展连接失败。',
-          cls: 'setting-item-description',
+        const failure = platformListEl.createDiv({ cls: 'wechat-multiplatform-state is-error' });
+        failure.createEl('div', { text: '还没连上 Wechatsync 扩展', cls: 'wechat-multiplatform-state-title' });
+        failure.createEl('p', {
+          text: error.message || '请确认浏览器扩展已经启用 CLI / MCP 连接。',
         });
-        statusEl.setText('连接失败');
+        const steps = failure.createEl('ol', { cls: 'wechat-multiplatform-steps' });
+        steps.createEl('li', { text: '在 Wechatsync 扩展设置中打开「CLI / MCP 连接」。' });
+        steps.createEl('li', { text: '保持这个浏览器打开，并确认目标平台已登录。' });
+        statusEl.empty();
+        statusEl.createEl('span', { text: '未连接', cls: 'wechat-multiplatform-status-dot is-error' });
+        statusEl.createEl('span', { text: '扩展未响应，按下方提示处理后重新检测。', cls: 'wechat-multiplatform-status-text' });
         syncBtn.disabled = true;
         syncBtn.addClass?.('apple-btn-disabled');
       } finally {
@@ -6179,11 +6191,9 @@ class AppleStylePlugin extends Plugin {
       });
     }
 
-    const { WebSocketServer } = require('ws');
     const http = require('http');
     this._wechatSyncBridgeCacheKey = cacheKey;
     this._wechatSyncBridgeService = createWechatSyncBridgeService({
-      WebSocketServer,
       http,
       port: settings.port,
       token: settings.token,

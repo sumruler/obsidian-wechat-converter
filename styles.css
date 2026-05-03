@@ -2822,72 +2822,187 @@ input[type="range"].apple-slider:active::-webkit-slider-thumb {
   height: 180px;
 }
 
-.wechat-publish-mode-tabs {
+.wechat-multiplatform-shell {
+  max-width: 720px;
+}
+
+.wechat-multiplatform-shell .modal-title,
+.wechat-multiplatform-title {
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.wechat-sync-modal .wechat-publish-mode-tabs {
   display: inline-flex;
-  gap: 4px;
-  padding: 4px;
-  margin: 4px 0 18px;
+  gap: 2px;
+  padding: 3px;
+  margin: 0 0 18px;
+  border: 1px solid var(--background-modifier-border);
   background: var(--background-secondary);
   border-radius: 8px;
 }
 
-.wechat-publish-mode-tab {
-  border: none;
+.wechat-sync-modal button.wechat-publish-mode-tab {
+  min-height: 30px;
+  border: none !important;
+  box-shadow: none !important;
   border-radius: 6px;
-  padding: 6px 12px;
+  padding: 5px 12px;
   color: var(--text-muted);
-  background: transparent;
+  background: transparent !important;
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
 }
 
-.wechat-publish-mode-tab.is-active {
+.wechat-sync-modal button.wechat-publish-mode-tab:hover {
   color: var(--text-normal);
-  background: var(--background-primary);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.wechat-sync-modal button.wechat-publish-mode-tab.is-active {
+  color: var(--text-normal);
+  background: var(--background-primary) !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08) !important;
 }
 
 .wechat-multiplatform-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
   margin-bottom: 14px;
-  color: var(--text-muted);
-  font-size: 13px;
-  line-height: 1.6;
+  padding: 14px 16px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.wechat-multiplatform-kicker {
+  margin-bottom: 4px;
+  color: var(--text-normal);
+  font-size: 14px;
+  font-weight: 650;
 }
 
 .wechat-multiplatform-intro p {
-  margin: 0 0 6px;
+  max-width: 64ch;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.wechat-multiplatform-badge {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  font-size: 11px;
+  font-weight: 650;
 }
 
 .wechat-multiplatform-status {
-  margin: 8px 0 12px;
-  padding: 10px 12px;
-  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 12px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  color: var(--text-muted);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  font-size: 13px;
+}
+
+.wechat-multiplatform-status-dot {
+  flex: 0 0 auto;
+  min-width: 54px;
+  padding: 2px 7px;
+  border-radius: 999px;
   color: var(--text-muted);
   background: var(--background-secondary);
-  font-size: 13px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.wechat-multiplatform-status-dot.is-ok {
+  color: var(--text-success);
+}
+
+.wechat-multiplatform-status-dot.is-error {
+  color: var(--text-error);
+}
+
+.wechat-multiplatform-status-dot.is-loading {
+  color: var(--interactive-accent);
+}
+
+.wechat-multiplatform-status-text {
+  line-height: 1.45;
 }
 
 .wechat-multiplatform-list {
   display: grid;
   gap: 8px;
-  min-height: 72px;
+  min-height: 126px;
+  margin-top: 10px;
 }
 
 .wechat-multiplatform-platform {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 10px;
+  gap: 10px;
+  min-height: 42px;
+  padding: 9px 11px;
   border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
+  border-radius: 7px;
   background: var(--background-primary);
 }
 
 .wechat-multiplatform-platform label {
   flex: 1;
+  color: var(--text-normal);
   font-size: 13px;
   cursor: pointer;
+}
+
+.wechat-multiplatform-platform input:disabled + label,
+.wechat-multiplatform-platform:has(input:disabled) label {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.wechat-multiplatform-state {
+  padding: 18px 18px 16px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.wechat-multiplatform-state-title {
+  margin-bottom: 6px;
+  color: var(--text-normal);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.wechat-multiplatform-state p {
+  max-width: 68ch;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.wechat-multiplatform-steps {
+  margin: 10px 0 0 18px;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.65;
 }
 
 /* 添加账号按钮 - 虚线边框 */
