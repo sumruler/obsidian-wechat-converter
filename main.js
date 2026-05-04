@@ -16826,9 +16826,9 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
         });
         await this.plugin.saveSettings();
       }));
-      new Setting(containerEl).setName("\u6D4B\u8BD5\u8FDE\u63A5").setDesc("\u8FDE\u63A5\u672C\u5730\u6865\u63A5\u4E0E\u6D4F\u89C8\u5668\u6269\u5C55\uFF0C\u5E76\u4F18\u5148\u8BFB\u53D6\u6269\u5C55\u7F13\u5B58\u7684\u5E73\u53F0\u767B\u5F55\u72B6\u6001\u3002Token \u4E0D\u4E00\u81F4\u65F6\u4F1A\u5728\u8FD9\u91CC\u63D0\u793A\u3002").addButton((button) => button.setButtonText("\u6D4B\u8BD5").onClick(async () => {
+      new Setting(containerEl).setName("\u6D4B\u8BD5\u8FDE\u63A5").setDesc("\u8FDE\u63A5\u672C\u5730\u6865\u63A5\u4E0E\u6D4F\u89C8\u5668\u6269\u5C55\uFF0C\u5E76\u4F18\u5148\u8BFB\u53D6\u6269\u5C55\u7F13\u5B58\u7684\u5E73\u53F0\u767B\u5F55\u72B6\u6001\u3002\u9996\u6B21\u542F\u52A8 bridge \u65F6\u53EF\u80FD\u9700\u8981\u7B49\u5F85\u6269\u5C55\u91CD\u8FDE\u3002").addButton((button) => button.setButtonText("\u6D4B\u8BD5").onClick(async () => {
         var _a, _b, _c, _d;
-        button.setButtonText("\u6D4B\u8BD5\u4E2D...");
+        button.setButtonText("\u7B49\u5F85\u6269\u5C55...");
         (_a = button.setDisabled) == null ? void 0 : _a.call(button, true);
         const startedAt = Date.now();
         try {
@@ -16840,8 +16840,11 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
           const bridge = this.plugin.getWechatSyncBridgeService();
           const status = await bridge.start();
           console.debug("[Wechatsync] bridge started", status);
-          await bridge.waitForConnection(3e3);
-          console.debug("[Wechatsync] extension connection ready");
+          await bridge.waitForConnection(15e3);
+          console.debug("[Wechatsync] extension connection ready", {
+            elapsedMs: Date.now() - startedAt
+          });
+          button.setButtonText("\u8BFB\u53D6\u5E73\u53F0...");
           const platforms = await bridge.listPlatforms({ forceRefresh: false, timeoutMs: 1e4 });
           const usablePlatforms = normalizeWechatsyncPlatformList(platforms);
           console.debug("[Wechatsync] listPlatforms response", {
@@ -16877,7 +16880,8 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
             }
           });
           await this.plugin.saveSettings();
-          new Notice(`\u274C Wechatsync \u8FDE\u63A5\u5931\u8D25\uFF1A${error.message}`, 1e4);
+          const hint = (error == null ? void 0 : error.code) === "EXTENSION_NOT_CONNECTED" ? "\u5982\u679C\u6D4F\u89C8\u5668\u6269\u5C55\u5DF2\u5F00\u542F MCP/CLI\uFF0C\u8BF7\u786E\u8BA4\u6269\u5C55\u91CC\u7684\u670D\u52A1\u5668\u5730\u5740\u7AEF\u53E3\u4E0E\u8FD9\u91CC\u4E00\u81F4\uFF0C\u6216\u5173\u95ED\u518D\u5F00\u542F\u4E00\u6B21\u6269\u5C55 MCP/CLI \u540E\u91CD\u8BD5\u3002" : "";
+          new Notice(`\u274C Wechatsync \u8FDE\u63A5\u5931\u8D25\uFF1A${error.message}${hint ? ` ${hint}` : ""}`, 12e3);
         } finally {
           (_d = button.setDisabled) == null ? void 0 : _d.call(button, false);
           button.setButtonText("\u6D4B\u8BD5");

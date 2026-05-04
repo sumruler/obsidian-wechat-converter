@@ -5617,11 +5617,11 @@ class AppleStyleSettingTab extends PluginSettingTab {
 
       new Setting(containerEl)
         .setName('测试连接')
-        .setDesc('连接本地桥接与浏览器扩展，并优先读取扩展缓存的平台登录状态。Token 不一致时会在这里提示。')
+        .setDesc('连接本地桥接与浏览器扩展，并优先读取扩展缓存的平台登录状态。首次启动 bridge 时可能需要等待扩展重连。')
         .addButton(button => button
           .setButtonText('测试')
           .onClick(async () => {
-            button.setButtonText('测试中...');
+            button.setButtonText('等待扩展...');
             button.setDisabled?.(true);
             const startedAt = Date.now();
             try {
@@ -5633,8 +5633,11 @@ class AppleStyleSettingTab extends PluginSettingTab {
               const bridge = this.plugin.getWechatSyncBridgeService();
               const status = await bridge.start();
               console.debug('[Wechatsync] bridge started', status);
-              await bridge.waitForConnection(3000);
-              console.debug('[Wechatsync] extension connection ready');
+              await bridge.waitForConnection(15000);
+              console.debug('[Wechatsync] extension connection ready', {
+                elapsedMs: Date.now() - startedAt,
+              });
+              button.setButtonText('读取平台...');
               const platforms = await bridge.listPlatforms({ forceRefresh: false, timeoutMs: 10000 });
               const usablePlatforms = normalizeWechatsyncPlatformList(platforms);
               console.debug('[Wechatsync] listPlatforms response', {
@@ -5670,7 +5673,10 @@ class AppleStyleSettingTab extends PluginSettingTab {
                 },
               });
               await this.plugin.saveSettings();
-              new Notice(`❌ Wechatsync 连接失败：${error.message}`, 10000);
+              const hint = error?.code === 'EXTENSION_NOT_CONNECTED'
+                ? '如果浏览器扩展已开启 MCP/CLI，请确认扩展里的服务器地址端口与这里一致，或关闭再开启一次扩展 MCP/CLI 后重试。'
+                : '';
+              new Notice(`❌ Wechatsync 连接失败：${error.message}${hint ? ` ${hint}` : ''}`, 12000);
             } finally {
               button.setDisabled?.(false);
               button.setButtonText('测试');
