@@ -105,6 +105,37 @@ describe('Wechatsync bridge service', () => {
     expect(Date.now() - startedAt).toBeLessThan(500);
   });
 
+  it('can time out article sync with a readable timeout error', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      requestTimeoutMs: 1000,
+      connectTimeoutMs: 1000,
+      idFactory: () => 'slow-sync',
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const extension = await connectExtension(port, () => new Promise(() => {}));
+    cleanup.push(extension);
+
+    await service.waitForConnection(1000);
+    const startedAt = Date.now();
+    await expect(service.syncArticle({
+      platforms: ['zhihu'],
+      title: '测试文章',
+      markdown: '# 正文',
+      content: '<h1>正文</h1>',
+      timeoutMs: 20,
+    })).rejects.toMatchObject({
+      code: 'SYNC_TIMEOUT',
+    });
+    expect(Date.now() - startedAt).toBeLessThan(500);
+  });
+
   it('maps extension token failures to a readable auth error', async () => {
     const port = await getFreePort();
     const service = createWechatSyncBridgeService({
@@ -248,5 +279,6 @@ describe('Wechatsync bridge service', () => {
     expect(createReadableBridgeError(new Error('MCP token not configured')).code).toBe('AUTH_FAILED');
     expect(createReadableBridgeError(new Error('Extension not connected')).code).toBe('EXTENSION_NOT_CONNECTED');
     expect(createReadableBridgeError(new Error('Request timeout: listPlatforms')).code).toBe('PLATFORM_LIST_TIMEOUT');
+    expect(createReadableBridgeError(new Error('Request timeout: syncArticle')).code).toBe('SYNC_TIMEOUT');
   });
 });

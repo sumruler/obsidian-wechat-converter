@@ -37,6 +37,7 @@ const {
 } = require('./services/ai-layout');
 const { createWechatSyncService } = require('./services/wechat-sync');
 const {
+  DEFAULT_SYNC_REQUEST_TIMEOUT_MS,
   DEFAULT_WECHATSYNC_PORT,
   createWechatSyncBridgeService,
 } = require('./services/wechatsync-bridge');
@@ -4103,7 +4104,9 @@ class AppleStyleView extends ItemView {
     });
     summary.createEl('p', {
       text: fatalError
-        ? (fatalError.message || 'Wechatsync 连接中断，请检查扩展、Token 或浏览器登录态后重试。')
+        ? (fatalError.code === 'SYNC_TIMEOUT'
+          ? 'Obsidian 没有等到浏览器扩展的最终回调。扩展可能仍在后台同步，请先查看 Wechatsync 历史或目标平台草稿箱；之后可以减少平台后重试。'
+          : (fatalError.message || 'Wechatsync 连接中断，请检查扩展、Token 或浏览器登录态后重试。'))
         : (normalizedResults.length > 0
           ? `${successCount}/${normalizedResults.length} 个平台已保存为草稿。成功的平台可以直接打开草稿检查，失败的平台修复后重新同步。`
           : '请求已发送到 Wechatsync 扩展。若这里没有返回平台明细，请在浏览器扩展中查看结果。'),
@@ -4116,7 +4119,9 @@ class AppleStyleView extends ItemView {
       const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
       body.createEl('div', { text: 'Wechatsync 桥接', cls: 'wechat-multiplatform-result-name' });
       body.createEl('div', {
-        text: fatalError.message || '连接不可用',
+        text: fatalError.code === 'SYNC_TIMEOUT'
+          ? '同步请求已超时，无法从当前 MCP 协议拿到逐平台进度。请在浏览器扩展侧确认是否已经生成草稿。'
+          : (fatalError.message || '连接不可用'),
         cls: 'wechat-multiplatform-result-detail',
       });
     } else if (normalizedResults.length === 0) {
@@ -4359,15 +4364,34 @@ class AppleStyleView extends ItemView {
       const content = this.getCurrentExportHtml() || this.currentHtml || '';
       const cover = this.sessionCoverBase64 || this.getFrontmatterPublishMeta(activeFile).coverSrc || this.getFirstImageFromArticle() || '';
       const notice = new Notice('正在通过 Wechatsync 同步到其他平台...', 0);
+      syncBtn.disabled = true;
+      syncBtn.addClass?.('apple-btn-disabled');
+      const syncStartedAt = Date.now();
+      const requestedPlatformIds = Array.from(selectedPlatforms);
+      console.info('[Wechatsync] syncArticle started', {
+        platformCount: requestedPlatformIds.length,
+        platforms: requestedPlatformIds,
+        title,
+        hasMarkdown: !!markdown,
+        contentLength: content.length,
+        hasCover: !!cover,
+        timeoutMs: DEFAULT_SYNC_REQUEST_TIMEOUT_MS,
+      });
       try {
         const bridge = this.plugin.getWechatSyncBridgeService();
-        const requestedPlatformIds = Array.from(selectedPlatforms);
         const result = await bridge.syncArticle({
           platforms: requestedPlatformIds,
           title,
           markdown,
           content,
           cover,
+          timeoutMs: DEFAULT_SYNC_REQUEST_TIMEOUT_MS,
+        });
+        console.info('[Wechatsync] syncArticle completed', {
+          elapsedMs: Date.now() - syncStartedAt,
+          resultKind: Array.isArray(result) ? 'array' : typeof result,
+          resultCount: Array.isArray(result?.results) ? result.results.length : (Array.isArray(result) ? result.length : 0),
+          syncId: result?.syncId,
         });
         notice.hide();
         modal.close();
@@ -4392,7 +4416,13 @@ class AppleStyleView extends ItemView {
         this.showMultiPlatformSyncResultModal({ results, requestedPlatformIds });
       } catch (error) {
         notice.hide();
-        console.error('Wechatsync sync error:', error);
+        console.error('[Wechatsync] syncArticle failed', {
+          elapsedMs: Date.now() - syncStartedAt,
+          code: error?.code,
+          message: error?.message || String(error),
+          stack: error?.stack,
+          requestedPlatformIds,
+        });
         if (isWechatSyncConnectionFailure(error)) {
           const currentMultiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
           this.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
@@ -4409,9 +4439,16 @@ class AppleStyleView extends ItemView {
         modal.close();
         new Notice(`❌ Wechatsync 同步失败：${error.message}`, 10000);
         this.showMultiPlatformSyncResultModal({
-          requestedPlatformIds: Array.from(selectedPlatforms),
+          requestedPlatformIds,
           fatalError: error,
         });
+      } finally {
+        syncBtn.disabled = selectedPlatforms.size === 0;
+        if (syncBtn.disabled) {
+          syncBtn.addClass?.('apple-btn-disabled');
+        } else {
+          syncBtn.removeClass?.('apple-btn-disabled');
+        }
       }
     };
 

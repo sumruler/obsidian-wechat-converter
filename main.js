@@ -10217,6 +10217,7 @@ var require_wechatsync_bridge = __commonJS({
     var DEFAULT_REQUEST_TIMEOUT_MS = 36e4;
     var DEFAULT_CONNECT_TIMEOUT_MS = 6e4;
     var DEFAULT_PLATFORM_REQUEST_TIMEOUT_MS = 6e4;
+    var DEFAULT_SYNC_REQUEST_TIMEOUT_MS2 = 18e4;
     var WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     function createEmitter() {
       const listeners = /* @__PURE__ */ new Map();
@@ -10429,6 +10430,12 @@ var require_wechatsync_bridge = __commonJS({
       if (/Request timeout: listPlatforms/i.test(message)) {
         const friendly = new Error("Wechatsync \u6269\u5C55\u5DF2\u8FDE\u63A5\uFF0C\u4F46\u8BFB\u53D6\u5E73\u53F0\u5217\u8868\u8D85\u65F6\u3002\u5E73\u53F0\u8F83\u591A\u6216\u90E8\u5206\u5E73\u53F0\u68C0\u67E5\u8F83\u6162\u65F6\u53EF\u80FD\u53D1\u751F\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002");
         friendly.code = "PLATFORM_LIST_TIMEOUT";
+        friendly.cause = error;
+        return friendly;
+      }
+      if (/Request timeout: syncArticle/i.test(message)) {
+        const friendly = new Error("Wechatsync \u6269\u5C55\u957F\u65F6\u95F4\u6CA1\u6709\u8FD4\u56DE\u540C\u6B65\u7ED3\u679C\u3002\u6D4F\u89C8\u5668\u6269\u5C55\u53EF\u80FD\u4ECD\u5728\u540E\u53F0\u5904\u7406\uFF0C\u8BF7\u5148\u5230\u6269\u5C55\u5386\u53F2\u6216\u76EE\u6807\u5E73\u53F0\u8349\u7A3F\u7BB1\u786E\u8BA4\u7ED3\u679C\uFF1B\u5982\u679C\u67D0\u4E2A\u5E73\u53F0\u5361\u4F4F\uFF0C\u5EFA\u8BAE\u51CF\u5C11\u5E73\u53F0\u540E\u91CD\u8BD5\u3002");
+        friendly.code = "SYNC_TIMEOUT";
         friendly.cause = error;
         return friendly;
       }
@@ -10773,11 +10780,11 @@ var require_wechatsync_bridge = __commonJS({
       function checkAuth(platform, { timeoutMs = DEFAULT_PLATFORM_REQUEST_TIMEOUT_MS } = {}) {
         return request2("checkAuth", { platform }, { timeoutMs });
       }
-      function syncArticle({ platforms, title, markdown, content, cover }) {
+      function syncArticle({ platforms, title, markdown, content, cover, timeoutMs = DEFAULT_SYNC_REQUEST_TIMEOUT_MS2 }) {
         return request2("syncArticle", {
           platforms,
           article: { title, markdown, content, cover }
-        });
+        }, { timeoutMs });
       }
       async function getStatus() {
         if (isServerMode) {
@@ -10799,6 +10806,7 @@ var require_wechatsync_bridge = __commonJS({
     }
     module2.exports = {
       DEFAULT_WECHATSYNC_PORT: DEFAULT_WECHATSYNC_PORT2,
+      DEFAULT_SYNC_REQUEST_TIMEOUT_MS: DEFAULT_SYNC_REQUEST_TIMEOUT_MS2,
       createReadableBridgeError,
       createWechatSyncBridgeService: createWechatSyncBridgeService2
     };
@@ -12122,6 +12130,7 @@ var {
 } = require_ai_layout();
 var { createWechatSyncService } = require_wechat_sync();
 var {
+  DEFAULT_SYNC_REQUEST_TIMEOUT_MS,
   DEFAULT_WECHATSYNC_PORT,
   createWechatSyncBridgeService
 } = require_wechatsync_bridge();
@@ -15667,7 +15676,7 @@ var AppleStyleView = class extends ItemView {
       text: fatalError ? "\u540C\u6B65\u6CA1\u6709\u5B8C\u6210" : isAllSuccess ? "\u8349\u7A3F\u5DF2\u4FDD\u5B58" : "\u90E8\u5206\u5E73\u53F0\u9700\u8981\u5904\u7406"
     });
     summary.createEl("p", {
-      text: fatalError ? fatalError.message || "Wechatsync \u8FDE\u63A5\u4E2D\u65AD\uFF0C\u8BF7\u68C0\u67E5\u6269\u5C55\u3001Token \u6216\u6D4F\u89C8\u5668\u767B\u5F55\u6001\u540E\u91CD\u8BD5\u3002" : normalizedResults.length > 0 ? `${successCount}/${normalizedResults.length} \u4E2A\u5E73\u53F0\u5DF2\u4FDD\u5B58\u4E3A\u8349\u7A3F\u3002\u6210\u529F\u7684\u5E73\u53F0\u53EF\u4EE5\u76F4\u63A5\u6253\u5F00\u8349\u7A3F\u68C0\u67E5\uFF0C\u5931\u8D25\u7684\u5E73\u53F0\u4FEE\u590D\u540E\u91CD\u65B0\u540C\u6B65\u3002` : "\u8BF7\u6C42\u5DF2\u53D1\u9001\u5230 Wechatsync \u6269\u5C55\u3002\u82E5\u8FD9\u91CC\u6CA1\u6709\u8FD4\u56DE\u5E73\u53F0\u660E\u7EC6\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u6269\u5C55\u4E2D\u67E5\u770B\u7ED3\u679C\u3002"
+      text: fatalError ? fatalError.code === "SYNC_TIMEOUT" ? "Obsidian \u6CA1\u6709\u7B49\u5230\u6D4F\u89C8\u5668\u6269\u5C55\u7684\u6700\u7EC8\u56DE\u8C03\u3002\u6269\u5C55\u53EF\u80FD\u4ECD\u5728\u540E\u53F0\u540C\u6B65\uFF0C\u8BF7\u5148\u67E5\u770B Wechatsync \u5386\u53F2\u6216\u76EE\u6807\u5E73\u53F0\u8349\u7A3F\u7BB1\uFF1B\u4E4B\u540E\u53EF\u4EE5\u51CF\u5C11\u5E73\u53F0\u540E\u91CD\u8BD5\u3002" : fatalError.message || "Wechatsync \u8FDE\u63A5\u4E2D\u65AD\uFF0C\u8BF7\u68C0\u67E5\u6269\u5C55\u3001Token \u6216\u6D4F\u89C8\u5668\u767B\u5F55\u6001\u540E\u91CD\u8BD5\u3002" : normalizedResults.length > 0 ? `${successCount}/${normalizedResults.length} \u4E2A\u5E73\u53F0\u5DF2\u4FDD\u5B58\u4E3A\u8349\u7A3F\u3002\u6210\u529F\u7684\u5E73\u53F0\u53EF\u4EE5\u76F4\u63A5\u6253\u5F00\u8349\u7A3F\u68C0\u67E5\uFF0C\u5931\u8D25\u7684\u5E73\u53F0\u4FEE\u590D\u540E\u91CD\u65B0\u540C\u6B65\u3002` : "\u8BF7\u6C42\u5DF2\u53D1\u9001\u5230 Wechatsync \u6269\u5C55\u3002\u82E5\u8FD9\u91CC\u6CA1\u6709\u8FD4\u56DE\u5E73\u53F0\u660E\u7EC6\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u6269\u5C55\u4E2D\u67E5\u770B\u7ED3\u679C\u3002"
     });
     const list = modal.contentEl.createDiv({ cls: "wechat-multiplatform-result-list" });
     if (fatalError) {
@@ -15675,7 +15684,7 @@ var AppleStyleView = class extends ItemView {
       const body = row.createDiv({ cls: "wechat-multiplatform-result-body" });
       body.createEl("div", { text: "Wechatsync \u6865\u63A5", cls: "wechat-multiplatform-result-name" });
       body.createEl("div", {
-        text: fatalError.message || "\u8FDE\u63A5\u4E0D\u53EF\u7528",
+        text: fatalError.code === "SYNC_TIMEOUT" ? "\u540C\u6B65\u8BF7\u6C42\u5DF2\u8D85\u65F6\uFF0C\u65E0\u6CD5\u4ECE\u5F53\u524D MCP \u534F\u8BAE\u62FF\u5230\u9010\u5E73\u53F0\u8FDB\u5EA6\u3002\u8BF7\u5728\u6D4F\u89C8\u5668\u6269\u5C55\u4FA7\u786E\u8BA4\u662F\u5426\u5DF2\u7ECF\u751F\u6210\u8349\u7A3F\u3002" : fatalError.message || "\u8FDE\u63A5\u4E0D\u53EF\u7528",
         cls: "wechat-multiplatform-result-detail"
       });
     } else if (normalizedResults.length === 0) {
@@ -15886,6 +15895,7 @@ var AppleStyleView = class extends ItemView {
       renderPlatforms(configuredPlatforms);
     }
     syncBtn.onclick = async () => {
+      var _a2, _b2, _c2;
       if (selectedPlatforms.size === 0) {
         new Notice("\u8BF7\u5148\u9009\u62E9\u81F3\u5C11\u4E00\u4E2A\u5E73\u53F0");
         return;
@@ -15896,15 +15906,34 @@ var AppleStyleView = class extends ItemView {
       const content = this.getCurrentExportHtml() || this.currentHtml || "";
       const cover = this.sessionCoverBase64 || this.getFrontmatterPublishMeta(activeFile).coverSrc || this.getFirstImageFromArticle() || "";
       const notice = new Notice("\u6B63\u5728\u901A\u8FC7 Wechatsync \u540C\u6B65\u5230\u5176\u4ED6\u5E73\u53F0...", 0);
+      syncBtn.disabled = true;
+      (_a2 = syncBtn.addClass) == null ? void 0 : _a2.call(syncBtn, "apple-btn-disabled");
+      const syncStartedAt = Date.now();
+      const requestedPlatformIds = Array.from(selectedPlatforms);
+      console.info("[Wechatsync] syncArticle started", {
+        platformCount: requestedPlatformIds.length,
+        platforms: requestedPlatformIds,
+        title,
+        hasMarkdown: !!markdown,
+        contentLength: content.length,
+        hasCover: !!cover,
+        timeoutMs: DEFAULT_SYNC_REQUEST_TIMEOUT_MS
+      });
       try {
         const bridge = this.plugin.getWechatSyncBridgeService();
-        const requestedPlatformIds = Array.from(selectedPlatforms);
         const result = await bridge.syncArticle({
           platforms: requestedPlatformIds,
           title,
           markdown,
           content,
-          cover
+          cover,
+          timeoutMs: DEFAULT_SYNC_REQUEST_TIMEOUT_MS
+        });
+        console.info("[Wechatsync] syncArticle completed", {
+          elapsedMs: Date.now() - syncStartedAt,
+          resultKind: Array.isArray(result) ? "array" : typeof result,
+          resultCount: Array.isArray(result == null ? void 0 : result.results) ? result.results.length : Array.isArray(result) ? result.length : 0,
+          syncId: result == null ? void 0 : result.syncId
         });
         notice.hide();
         modal.close();
@@ -15928,7 +15957,13 @@ var AppleStyleView = class extends ItemView {
         this.showMultiPlatformSyncResultModal({ results, requestedPlatformIds });
       } catch (error) {
         notice.hide();
-        console.error("Wechatsync sync error:", error);
+        console.error("[Wechatsync] syncArticle failed", {
+          elapsedMs: Date.now() - syncStartedAt,
+          code: error == null ? void 0 : error.code,
+          message: (error == null ? void 0 : error.message) || String(error),
+          stack: error == null ? void 0 : error.stack,
+          requestedPlatformIds
+        });
         if (isWechatSyncConnectionFailure(error)) {
           const currentMultiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
           this.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
@@ -15945,9 +15980,16 @@ var AppleStyleView = class extends ItemView {
         modal.close();
         new Notice(`\u274C Wechatsync \u540C\u6B65\u5931\u8D25\uFF1A${error.message}`, 1e4);
         this.showMultiPlatformSyncResultModal({
-          requestedPlatformIds: Array.from(selectedPlatforms),
+          requestedPlatformIds,
           fatalError: error
         });
+      } finally {
+        syncBtn.disabled = selectedPlatforms.size === 0;
+        if (syncBtn.disabled) {
+          (_b2 = syncBtn.addClass) == null ? void 0 : _b2.call(syncBtn, "apple-btn-disabled");
+        } else {
+          (_c2 = syncBtn.removeClass) == null ? void 0 : _c2.call(syncBtn, "apple-btn-disabled");
+        }
       }
     };
     modal.open();
