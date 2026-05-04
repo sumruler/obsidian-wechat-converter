@@ -41,6 +41,7 @@ const {
   createWechatSyncBridgeService,
 } = require('./services/wechatsync-bridge');
 const {
+  getFallbackWechatsyncPlatforms,
   getMultiPlatformResultSummary,
   getWechatSyncResultError,
   getWechatSyncResultPlatformId,
@@ -49,6 +50,7 @@ const {
   normalizeWechatSyncResponseResults,
   normalizeWechatsyncPlatformList,
   normalizeWechatsyncPlatform,
+  probeWechatsyncPlatformsIndividually,
   summarizeWechatsyncPlatformResponse,
   updateCachedPlatformsAfterSync,
 } = require('./services/wechatsync-results');
@@ -67,6 +69,7 @@ function createDefaultMultiPlatformSyncSettings() {
     enabled: false,
     port: DEFAULT_WECHATSYNC_PORT,
     token: '',
+    selectedPlatforms: [],
     connection: {
       status: 'untested',
       checkedAt: 0,
@@ -95,12 +98,18 @@ function normalizeMultiPlatformSyncSettings(value = {}) {
   const defaults = createDefaultMultiPlatformSyncSettings();
   const source = value && typeof value === 'object' ? value : {};
   const portNumber = Number(source.port);
+  const knownPlatformIds = new Set(getFallbackWechatsyncPlatforms().map((platform) => platform.id));
   return {
     enabled: !!source.enabled,
     port: Number.isInteger(portNumber) && portNumber > 0 && portNumber < 65536
       ? portNumber
       : defaults.port,
     token: typeof source.token === 'string' ? source.token.trim() : '',
+    selectedPlatforms: Array.isArray(source.selectedPlatforms)
+      ? source.selectedPlatforms
+        .map((id) => String(id || '').trim())
+        .filter((id, index, list) => knownPlatformIds.has(id) && list.indexOf(id) === index)
+      : [],
     connection: normalizeMultiPlatformConnection(source.connection),
   };
 }
@@ -4192,6 +4201,22 @@ class AppleStyleView extends ItemView {
       }
     };
 
+    const cachedPlatformById = new Map(
+      (cachedConnection.platforms || [])
+        .map((platform) => normalizeWechatsyncPlatform(platform))
+        .filter(Boolean)
+        .map((platform) => [platform.id, platform])
+    );
+    const configuredPlatformIds = new Set(bridgeSettings.selectedPlatforms || []);
+    const configuredPlatforms = getFallbackWechatsyncPlatforms()
+      .filter((platform) => configuredPlatformIds.has(platform.id))
+      .map((platform) => {
+        const cachedPlatform = cachedPlatformById.get(platform.id);
+        return cachedPlatform
+          ? { ...platform, ...cachedPlatform, authKnown: true }
+          : { ...platform, authKnown: false, authenticated: false, username: '', error: '' };
+      });
+
     const statusEl = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-status' });
     const platformListEl = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-list' });
     const selectedPlatforms = new Set();
@@ -4219,7 +4244,7 @@ class AppleStyleView extends ItemView {
       if (normalizedPlatforms.length === 0) {
         const empty = platformListEl.createDiv({ cls: 'wechat-multiplatform-state' });
         empty.createEl('div', { text: '还没有可分发的平台', cls: 'wechat-multiplatform-state-title' });
-        empty.createEl('p', { text: '请在浏览器中登录目标平台，并确认 Wechatsync 扩展能识别账号。' });
+        empty.createEl('p', { text: '请先在插件设置中勾选要通过 Wechatsync 同步的平台。' });
         syncBtn.disabled = true;
         syncBtn.addClass?.('apple-btn-disabled');
         return;
@@ -4230,15 +4255,18 @@ class AppleStyleView extends ItemView {
         const checkbox = row.createEl('input');
         checkbox.type = 'checkbox';
         checkbox.value = platform.id;
-        checkbox.disabled = !platform.authenticated;
-        const accountSuffix = platform.authenticated && platform.username
-          ? `（${platform.username}）`
-          : (platform.authenticated ? '' : '（未登录）');
+        checkbox.checked = true;
+        selectedPlatforms.add(platform.id);
+        const accountSuffix = platform.authKnown
+          ? (platform.authenticated && platform.username
+            ? `（${platform.username}）`
+            : (platform.authenticated ? '（已登录）' : '（未登录）'))
+          : '（未检测）';
         const label = row.createEl('label', {
           text: `${platform.name}${accountSuffix}`,
         });
         label.onclick = () => {
-          if (!checkbox.disabled) checkbox.click();
+          checkbox.click();
         };
         checkbox.onchange = () => {
           if (checkbox.checked) {
@@ -4253,6 +4281,12 @@ class AppleStyleView extends ItemView {
             syncBtn.removeClass?.('apple-btn-disabled');
           }
         };
+      }
+      syncBtn.disabled = selectedPlatforms.size === 0;
+      if (syncBtn.disabled) {
+        syncBtn.addClass?.('apple-btn-disabled');
+      } else {
+        syncBtn.removeClass?.('apple-btn-disabled');
       }
     };
 
@@ -4280,11 +4314,11 @@ class AppleStyleView extends ItemView {
       statusEl.createEl('span', { text: '已连接', cls: 'wechat-multiplatform-status-dot is-ok' });
       statusEl.createEl('span', {
         text: checkedAtText
-          ? `使用设置中 ${checkedAtText} 的测试结果。微信不会出现在这里。`
-          : '使用设置中缓存的测试结果。微信不会出现在这里。',
+          ? `桥接已连接。使用设置中 ${checkedAtText} 的所选平台配置，微信不会出现在这里。`
+          : '桥接已连接。使用设置中的所选平台配置，微信不会出现在这里。',
         cls: 'wechat-multiplatform-status-text',
       });
-      renderPlatforms(cachedConnection.platforms);
+      renderPlatforms(configuredPlatforms);
     } else if (cachedConnection.status === 'failed') {
       statusEl.createEl('span', { text: '未连接', cls: 'wechat-multiplatform-status-dot is-error' });
       statusEl.createEl('span', {
@@ -4293,7 +4327,7 @@ class AppleStyleView extends ItemView {
       });
       renderConnectionPrompt(
         'Wechatsync 连接尚未可用',
-        cachedConnection.message || '请在设置中测试连接，成功后这里会直接显示可用平台。'
+        cachedConnection.message || '请在设置中测试桥接连接，并勾选要同步的平台。'
       );
     } else {
       statusEl.createEl('span', { text: '未测试', cls: 'wechat-multiplatform-status-dot' });
@@ -4303,7 +4337,7 @@ class AppleStyleView extends ItemView {
       });
       renderConnectionPrompt(
         '需要先测试连接',
-        '连接状态是低频配置项。请到插件设置中填好 Token 并测试一次，之后发布弹窗会直接读取缓存。'
+        '连接状态是低频配置项。请到插件设置中填好 Token、勾选平台并测试一次。'
       );
     }
 
@@ -5624,9 +5658,37 @@ class AppleStyleSettingTab extends PluginSettingTab {
             this.plugin.startWechatSyncBridgeInBackground('settings-token-change');
           }));
 
+      const availablePlatforms = getFallbackWechatsyncPlatforms();
+      const selectedPlatformSet = new Set(multiPlatformSettings.selectedPlatforms || []);
+      new Setting(containerEl)
+        .setName('同步平台')
+        .setDesc('只选择你会从 Obsidian 发草稿的平台。未检测登录状态也可以发送，最终结果以浏览器扩展返回为准。');
+
+      for (const platform of availablePlatforms) {
+        new Setting(containerEl)
+          .setName(platform.name)
+          .setDesc(platform.id)
+          .addToggle(toggle => toggle
+            .setValue(selectedPlatformSet.has(platform.id))
+            .onChange(async (value) => {
+              const current = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+              const nextSelected = new Set(current.selectedPlatforms || []);
+              if (value) {
+                nextSelected.add(platform.id);
+              } else {
+                nextSelected.delete(platform.id);
+              }
+              this.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
+                ...current,
+                selectedPlatforms: Array.from(nextSelected),
+              });
+              await this.plugin.saveSettings();
+            }));
+      }
+
       new Setting(containerEl)
         .setName('测试连接')
-        .setDesc('连接本地桥接与浏览器扩展，并优先读取扩展缓存的平台登录状态。首次启动 bridge 时可能需要等待扩展重连。')
+        .setDesc('只测试 Obsidian 和 Wechatsync 浏览器扩展的桥接是否连通，不会默认扫描所有平台。')
         .addButton(button => button
           .setButtonText('测试')
           .onClick(async () => {
@@ -5646,29 +5708,18 @@ class AppleStyleSettingTab extends PluginSettingTab {
               console.debug('[Wechatsync] extension connection ready', {
                 elapsedMs: Date.now() - startedAt,
               });
-              button.setButtonText('读取平台...');
-              console.debug('[Wechatsync] reading platform list', {
-                timeoutMs: 60000,
-                note: 'Wechatsync checks platforms in batches; this can take tens of seconds when many platforms are installed.',
-              });
-              const platforms = await bridge.listPlatforms({ forceRefresh: false, timeoutMs: 60000 });
-              const usablePlatforms = normalizeWechatsyncPlatformList(platforms);
-              console.debug('[Wechatsync] listPlatforms response', {
-                elapsedMs: Date.now() - startedAt,
-                ...summarizeWechatsyncPlatformResponse(platforms),
-              });
+              const current = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
               this.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
-                ...this.plugin.settings.multiPlatformSync,
+                ...current,
                 connection: {
+                  ...current.connection,
                   status: 'connected',
                   checkedAt: Date.now(),
-                  platforms: usablePlatforms,
-                  message: '',
+                  message: '桥接已连接。平台登录状态未自动检测。',
                 },
               });
               await this.plugin.saveSettings();
-              const authenticatedCount = usablePlatforms.filter((platform) => platform.authenticated).length;
-              new Notice(`✅ 已连接 Wechatsync，检测到 ${usablePlatforms.length} 个非微信平台，${authenticatedCount} 个已登录`);
+              new Notice('✅ 已连接 Wechatsync 浏览器扩展');
             } catch (error) {
               console.error('[Wechatsync] test connection failed', {
                 elapsedMs: Date.now() - startedAt,
@@ -5688,13 +5739,67 @@ class AppleStyleSettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
               const hint = error?.code === 'EXTENSION_NOT_CONNECTED'
                 ? '如果浏览器扩展已开启 MCP/CLI，请确认扩展里的服务器地址端口与这里一致，或关闭再开启一次扩展 MCP/CLI 后重试。'
-                : (error?.code === 'PLATFORM_LIST_TIMEOUT'
-                  ? '桥接已经连上，但 Wechatsync 正在检查多个平台登录状态。你可以稍后重试，或先在浏览器扩展里打开一次平台列表让它更新缓存。'
-                  : '');
+                : '';
               new Notice(`❌ Wechatsync 连接失败：${error.message}${hint ? ` ${hint}` : ''}`, 12000);
             } finally {
               button.setDisabled?.(false);
               button.setButtonText('测试');
+            }
+          }));
+
+      new Setting(containerEl)
+        .setName('检测已选平台登录状态')
+        .setDesc('可选。只检测上方已勾选的平台，结果仅作为提示；发布时仍以浏览器扩展返回为准。')
+        .addButton(button => button
+          .setButtonText('检测')
+          .onClick(async () => {
+            const current = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+            const selectedPlatforms = new Set(current.selectedPlatforms || []);
+            const candidates = getFallbackWechatsyncPlatforms().filter((platform) => selectedPlatforms.has(platform.id));
+            if (!candidates.length) {
+              new Notice('请先勾选至少一个同步平台');
+              return;
+            }
+
+            button.setButtonText('检测中...');
+            button.setDisabled?.(true);
+            const startedAt = Date.now();
+            try {
+              const bridge = this.plugin.getWechatSyncBridgeService();
+              await bridge.start();
+              await bridge.waitForConnection(15000);
+              const usablePlatforms = await probeWechatsyncPlatformsIndividually(bridge, {
+                candidates,
+                timeoutMs: 6000,
+                concurrency: 4,
+                logger: console,
+              });
+              console.debug('[Wechatsync] selected platform auth summary', {
+                elapsedMs: Date.now() - startedAt,
+                ...summarizeWechatsyncPlatformResponse(usablePlatforms),
+              });
+              this.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
+                ...current,
+                connection: {
+                  status: 'connected',
+                  checkedAt: Date.now(),
+                  platforms: usablePlatforms,
+                  message: '已检测所选平台登录状态。',
+                },
+              });
+              await this.plugin.saveSettings();
+              const authenticatedCount = usablePlatforms.filter((platform) => platform.authenticated).length;
+              new Notice(`✅ 已检测 ${usablePlatforms.length} 个已选平台，${authenticatedCount} 个已登录`);
+            } catch (error) {
+              console.error('[Wechatsync] selected platform auth check failed', {
+                elapsedMs: Date.now() - startedAt,
+                code: error?.code,
+                message: error?.message || String(error),
+              });
+              new Notice(`❌ 检测失败：${error.message}`, 10000);
+            } finally {
+              button.setDisabled?.(false);
+              button.setButtonText('检测');
             }
           }));
     }

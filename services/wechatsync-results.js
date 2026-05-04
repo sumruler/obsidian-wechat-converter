@@ -1,11 +1,52 @@
+const FALLBACK_WECHATSYNC_PLATFORMS = [
+  { id: 'zhihu', name: '知乎' },
+  { id: 'juejin', name: '掘金' },
+  { id: 'bilibili', name: '哔哩哔哩' },
+  { id: 'baijiahao', name: '百家号' },
+  { id: 'douyin', name: '抖音图文' },
+  { id: 'twitter', name: 'X (Twitter)' },
+  { id: 'x', name: 'X (Twitter)' },
+  { id: 'weibo', name: '微博' },
+  { id: 'csdn', name: 'CSDN' },
+  { id: 'yuque', name: '语雀' },
+  { id: 'douban', name: '豆瓣' },
+  { id: 'sohu', name: '搜狐号' },
+  { id: 'xueqiu', name: '雪球' },
+  { id: 'woshipm', name: '人人都是产品经理' },
+  { id: '51cto', name: '51CTO' },
+  { id: 'imooc', name: '慕课网' },
+  { id: 'oschina', name: '开源中国' },
+  { id: 'segmentfault', name: 'SegmentFault' },
+  { id: 'cnblogs', name: '博客园' },
+  { id: 'eastmoney', name: '东方财富' },
+];
+
+function getFallbackWechatsyncPlatforms() {
+  return FALLBACK_WECHATSYNC_PLATFORMS.map((platform) => ({ ...platform }));
+}
+
+function isPlatformNotFoundError(error = '') {
+  return /platform not found|adapter not found|not found/i.test(String(error || ''));
+}
+
 function normalizeWechatsyncPlatform(platform = {}) {
   const id = String(platform.id || platform.type || platform.platform || '').trim();
   if (!id || id === 'weixin') return null;
   const nestedAuth = platform.auth && typeof platform.auth === 'object' ? platform.auth : {};
   const user = platform.user && typeof platform.user === 'object' ? platform.user : {};
+  const authKnown = platform.authKnown === true
+    || Object.prototype.hasOwnProperty.call(platform, 'isAuthenticated')
+    || Object.prototype.hasOwnProperty.call(platform, 'authenticated')
+    || Object.prototype.hasOwnProperty.call(platform, 'isAuth')
+    || Object.prototype.hasOwnProperty.call(platform, 'loggedIn')
+    || Object.prototype.hasOwnProperty.call(nestedAuth, 'isAuthenticated')
+    || Object.prototype.hasOwnProperty.call(nestedAuth, 'authenticated')
+    || Object.prototype.hasOwnProperty.call(nestedAuth, 'loggedIn')
+    || typeof platform.status === 'string';
   return {
     id,
     name: String(platform.name || platform.title || platform.platformName || id),
+    authKnown,
     authenticated: platform.isAuthenticated === true
       || platform.authenticated === true
       || platform.isAuth === true
@@ -25,6 +66,60 @@ function normalizeWechatsyncPlatform(platform = {}) {
           : (typeof user.name === 'string' ? user.name : ''))),
     error: typeof platform.error === 'string' ? platform.error : '',
   };
+}
+
+function normalizeWechatsyncCheckAuthResult(candidate = {}, auth = {}) {
+  const error = typeof auth?.error === 'string' ? auth.error : '';
+  if (isPlatformNotFoundError(error)) return null;
+  return normalizeWechatsyncPlatform({
+    ...auth,
+    id: candidate.id,
+    name: candidate.name,
+    type: candidate.id,
+    platform: candidate.id,
+  });
+}
+
+async function probeWechatsyncPlatformsIndividually(bridge, options = {}) {
+  const {
+    candidates = getFallbackWechatsyncPlatforms(),
+    timeoutMs = 6000,
+    concurrency = 4,
+    logger = console,
+  } = options;
+  const results = [];
+
+  for (let i = 0; i < candidates.length; i += concurrency) {
+    const batch = candidates.slice(i, i + concurrency);
+    const batchResults = await Promise.all(batch.map(async (candidate) => {
+      try {
+        const auth = await bridge.checkAuth(candidate.id, { timeoutMs });
+        const normalized = normalizeWechatsyncCheckAuthResult(candidate, auth);
+        logger.debug?.('[Wechatsync] fallback checkAuth result', {
+          id: candidate.id,
+          name: candidate.name,
+          authenticated: normalized?.authenticated,
+          error: auth?.error || '',
+        });
+        return normalized;
+      } catch (error) {
+        logger.debug?.('[Wechatsync] fallback checkAuth failed', {
+          id: candidate.id,
+          name: candidate.name,
+          code: error?.code,
+          message: error?.message || String(error),
+        });
+        return null;
+      }
+    }));
+    results.push(...batchResults.filter(Boolean));
+  }
+
+  const byId = new Map();
+  for (const platform of results) {
+    if (!byId.has(platform.id)) byId.set(platform.id, platform);
+  }
+  return Array.from(byId.values());
 }
 
 function normalizeWechatsyncPlatformList(response) {
@@ -148,6 +243,7 @@ function updateCachedPlatformsAfterSync(cachedPlatforms = [], results = []) {
 }
 
 module.exports = {
+  getFallbackWechatsyncPlatforms,
   getMultiPlatformResultSummary,
   getWechatSyncResultError,
   getWechatSyncResultPlatformId,
@@ -155,8 +251,10 @@ module.exports = {
   isWechatSyncAuthFailureMessage,
   isWechatSyncConnectionFailure,
   normalizeWechatSyncResponseResults,
+  normalizeWechatsyncCheckAuthResult,
   normalizeWechatsyncPlatformList,
   normalizeWechatsyncPlatform,
+  probeWechatsyncPlatformsIndividually,
   summarizeWechatsyncPlatformResponse,
   updateCachedPlatformsAfterSync,
 };

@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   getMultiPlatformResultSummary,
   getWechatSyncResultUrl,
+  getFallbackWechatsyncPlatforms,
   normalizeWechatSyncResponseResults,
+  normalizeWechatsyncCheckAuthResult,
   normalizeWechatsyncPlatformList,
   normalizeWechatsyncPlatform,
+  probeWechatsyncPlatformsIndividually,
   summarizeWechatsyncPlatformResponse,
   updateCachedPlatformsAfterSync,
 } from '../services/wechatsync-results.js';
@@ -19,6 +22,7 @@ describe('Wechatsync result helpers', () => {
     })).toEqual({
       id: 'zhihu',
       name: '知乎',
+      authKnown: true,
       authenticated: true,
       username: 'Lin',
       error: '',
@@ -46,8 +50,8 @@ describe('Wechatsync result helpers', () => {
     };
 
     expect(normalizeWechatsyncPlatformList(response)).toEqual([
-      { id: 'zhihu', name: '知乎', authenticated: true, username: 'Lin', error: '' },
-      { id: 'douyin', name: '抖音图文', authenticated: true, username: 'home', error: '' },
+      { id: 'zhihu', name: '知乎', authKnown: true, authenticated: true, username: 'Lin', error: '' },
+      { id: 'douyin', name: '抖音图文', authKnown: true, authenticated: true, username: 'home', error: '' },
     ]);
     expect(summarizeWechatsyncPlatformResponse(response)).toMatchObject({
       responseKind: 'object',
@@ -55,6 +59,53 @@ describe('Wechatsync result helpers', () => {
       normalizedCount: 2,
       authenticatedCount: 2,
     });
+  });
+
+  it('normalizes single-platform checkAuth results with fallback metadata', () => {
+    expect(normalizeWechatsyncCheckAuthResult(
+      { id: 'zhihu', name: '知乎' },
+      { isAuthenticated: true, username: 'Lin' }
+    )).toEqual({
+      id: 'zhihu',
+      name: '知乎',
+      authKnown: true,
+      authenticated: true,
+      username: 'Lin',
+      error: '',
+    });
+
+    expect(normalizeWechatsyncCheckAuthResult(
+      { id: 'missing', name: '缺失平台' },
+      { isAuthenticated: false, error: 'Platform not found' }
+    )).toBeNull();
+  });
+
+  it('probes fallback platforms without letting one failed platform block the rest', async () => {
+    const bridge = {
+      async checkAuth(platform) {
+        if (platform === 'zhihu') return { isAuthenticated: true, username: 'Lin' };
+        if (platform === 'juejin') return { isAuthenticated: false, error: '未登录' };
+        if (platform === 'missing') return { isAuthenticated: false, error: 'Platform not found' };
+        throw new Error('network down');
+      },
+    };
+
+    const platforms = await probeWechatsyncPlatformsIndividually(bridge, {
+      candidates: [
+        { id: 'zhihu', name: '知乎' },
+        { id: 'juejin', name: '掘金' },
+        { id: 'missing', name: '缺失平台' },
+        { id: 'broken', name: '失败平台' },
+      ],
+      concurrency: 2,
+      logger: { debug() {} },
+    });
+
+    expect(platforms).toEqual([
+      { id: 'zhihu', name: '知乎', authKnown: true, authenticated: true, username: 'Lin', error: '' },
+      { id: 'juejin', name: '掘金', authKnown: true, authenticated: false, username: '', error: '未登录' },
+    ]);
+    expect(getFallbackWechatsyncPlatforms().some((platform) => platform.id === 'zhihu')).toBe(true);
   });
 
   it('normalizes sync responses from arrays, wrapped results, and single results', () => {
@@ -102,9 +153,9 @@ describe('Wechatsync result helpers', () => {
     ];
 
     expect(updateCachedPlatformsAfterSync(cached, results)).toEqual([
-      { id: 'zhihu', name: '知乎', authenticated: true, username: 'Lin', error: '' },
-      { id: 'juejin', name: '掘金', authenticated: false, username: '', error: '未登录，请重新登录' },
-      { id: 'csdn', name: 'CSDN', authenticated: true, username: '', error: '' },
+      { id: 'zhihu', name: '知乎', authKnown: true, authenticated: true, username: 'Lin', error: '' },
+      { id: 'juejin', name: '掘金', authKnown: true, authenticated: false, username: '', error: '未登录，请重新登录' },
+      { id: 'csdn', name: 'CSDN', authKnown: true, authenticated: true, username: '', error: '' },
     ]);
   });
 });
