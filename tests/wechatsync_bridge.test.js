@@ -80,6 +80,80 @@ describe('Wechatsync bridge service', () => {
     expect(platforms[0].id).toBe('zhihu');
   });
 
+  it('checks bridge health through the extension so token errors are surfaced', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      requestTimeoutMs: 1000,
+      connectTimeoutMs: 1000,
+      idFactory: () => 'health-1',
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const extension = await connectExtension(port, (message) => {
+      expect(message).toMatchObject({
+        id: 'health-1',
+        method: 'health',
+        token: 'secret-token',
+      });
+      return {
+        result: {
+          ok: true,
+          extensionConnected: true,
+          tokenValid: true,
+          version: '2.0.9',
+        },
+      };
+    });
+    cleanup.push(extension);
+
+    await service.waitForConnection(1000);
+    await expect(service.health()).resolves.toMatchObject({
+      ok: true,
+      tokenValid: true,
+    });
+  });
+
+  it('loads supported platform metadata without triggering auth checks', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      requestTimeoutMs: 1000,
+      connectTimeoutMs: 1000,
+      idFactory: () => 'supported-1',
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const extension = await connectExtension(port, (message) => {
+      expect(message).toMatchObject({
+        id: 'supported-1',
+        method: 'listSupportedPlatforms',
+        token: 'secret-token',
+      });
+      return {
+        result: [
+          { id: 'zhihu', name: '知乎', supportsDraft: true },
+          { id: 'xiaohongshu', name: '小红书', supportsDraft: true },
+        ],
+      };
+    });
+    cleanup.push(extension);
+
+    await service.waitForConnection(1000);
+    await expect(service.listSupportedPlatforms()).resolves.toEqual([
+      { id: 'zhihu', name: '知乎', supportsDraft: true },
+      { id: 'xiaohongshu', name: '小红书', supportsDraft: true },
+    ]);
+  });
+
   it('can time out platform listing without waiting for the long sync timeout', async () => {
     const port = await getFreePort();
     const service = createWechatSyncBridgeService({
@@ -294,6 +368,57 @@ describe('Wechatsync bridge service', () => {
     });
   });
 
+  it('enqueues article sync and returns the extension sync id', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      requestTimeoutMs: 1000,
+      connectTimeoutMs: 1000,
+      idFactory: () => 'enqueue-1',
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const extension = await connectExtension(port, (message) => {
+      expect(message).toMatchObject({
+        id: 'enqueue-1',
+        method: 'enqueueSyncArticle',
+        token: 'secret-token',
+        params: {
+          platforms: ['zhihu'],
+          source: 'obsidian',
+          article: {
+            title: '测试文章',
+            markdown: '# 正文',
+            content: '<h1>正文</h1>',
+          },
+        },
+      });
+      return {
+        result: {
+          accepted: true,
+          syncId: 'extension-sync-1',
+          platforms: ['zhihu'],
+        },
+      };
+    });
+    cleanup.push(extension);
+
+    await service.waitForConnection(1000);
+    await expect(service.enqueueSyncArticle({
+      platforms: ['zhihu'],
+      title: '测试文章',
+      markdown: '# 正文',
+      content: '<h1>正文</h1>',
+    })).resolves.toMatchObject({
+      accepted: true,
+      syncId: 'extension-sync-1',
+    });
+  });
+
   it('can forward through an existing primary bridge HTTP API', async () => {
     const port = await getFreePort();
     const primary = createWechatSyncBridgeService({
@@ -334,5 +459,6 @@ describe('Wechatsync bridge service', () => {
     expect(createReadableBridgeError(new Error('Extension not connected')).code).toBe('EXTENSION_NOT_CONNECTED');
     expect(createReadableBridgeError(new Error('Request timeout: listPlatforms')).code).toBe('PLATFORM_LIST_TIMEOUT');
     expect(createReadableBridgeError(new Error('Request timeout: syncArticle')).code).toBe('SYNC_TIMEOUT');
+    expect(createReadableBridgeError(new Error('Request timeout: enqueueSyncArticle')).code).toBe('BRIDGE_REQUEST_TIMEOUT');
   });
 });

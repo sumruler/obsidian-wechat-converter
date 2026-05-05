@@ -238,6 +238,12 @@ function createReadableBridgeError(error) {
     friendly.cause = error;
     return friendly;
   }
+  if (/Request timeout: (health|listSupportedPlatforms|enqueueSyncArticle)/i.test(message)) {
+    const friendly = new Error('Wechatsync 扩展响应超时，请确认扩展已开启 MCP/桥接后重试。');
+    friendly.code = 'BRIDGE_REQUEST_TIMEOUT';
+    friendly.cause = error;
+    return friendly;
+  }
   if (/EADDRINUSE|Primary|ECONNREFUSED|not reachable/i.test(message)) {
     const friendly = new Error('无法连接 Wechatsync 本地桥接服务。请确认没有其他同步进程占用端口，或稍后重试。');
     friendly.code = 'BRIDGE_UNAVAILABLE';
@@ -703,6 +709,14 @@ function createWechatSyncBridgeService(options = {}) {
     return request('listPlatforms', { forceRefresh }, { timeoutMs });
   }
 
+  function health({ timeoutMs = 5000 } = {}) {
+    return request('health', {}, { timeoutMs });
+  }
+
+  function listSupportedPlatforms({ timeoutMs = DEFAULT_PLATFORM_REQUEST_TIMEOUT_MS } = {}) {
+    return request('listSupportedPlatforms', {}, { timeoutMs });
+  }
+
   function checkAuth(platform, { timeoutMs = DEFAULT_PLATFORM_REQUEST_TIMEOUT_MS } = {}) {
     return request('checkAuth', { platform }, { timeoutMs });
   }
@@ -710,6 +724,14 @@ function createWechatSyncBridgeService(options = {}) {
   function syncArticle({ platforms, title, markdown, content, cover, timeoutMs = DEFAULT_SYNC_REQUEST_TIMEOUT_MS }) {
     return request('syncArticle', {
       platforms,
+      article: { title, markdown, content, cover },
+    }, { timeoutMs });
+  }
+
+  function enqueueSyncArticle({ platforms, title, markdown, content, cover, source = 'obsidian', timeoutMs = 10000 }) {
+    return request('enqueueSyncArticle', {
+      platforms,
+      source,
       article: { title, markdown, content, cover },
     }, { timeoutMs });
   }
@@ -734,9 +756,12 @@ function createWechatSyncBridgeService(options = {}) {
     stop,
     waitForConnection,
     getStatus,
+    health,
+    listSupportedPlatforms,
     listPlatforms,
     checkAuth,
     syncArticle,
+    enqueueSyncArticle,
     sendArticle,
     _request: request,
     _send: send,
