@@ -4193,8 +4193,10 @@ class AppleStyleView extends ItemView {
             return true;
           }
         } catch (error) {
-          if (!isWechatSyncUnsupportedMethodError(error)) throw error;
-          console.warn('[Wechatsync] openSyncTask unsupported, falling back to task link', error);
+          console.warn('[Wechatsync] openSyncTask failed, falling back to task link', {
+            code: error?.code,
+            message: error?.message || String(error),
+          });
         }
       }
 
@@ -4210,8 +4212,10 @@ class AppleStyleView extends ItemView {
             return false;
           }
         } catch (error) {
-          if (!isWechatSyncUnsupportedMethodError(error)) throw error;
-          console.warn('[Wechatsync] getSyncTaskLink unsupported', error);
+          console.warn('[Wechatsync] getSyncTaskLink failed', {
+            code: error?.code,
+            message: error?.message || String(error),
+          });
         }
       }
 

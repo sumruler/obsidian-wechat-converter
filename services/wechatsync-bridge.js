@@ -104,6 +104,12 @@ function parseWebSocketFrames(buffer) {
     if (opcode === 0x1) {
       messages.push(payload.toString('utf8'));
     }
+    if (opcode === 0x8) {
+      messages.push({ __ws_control: 'close', code: payloadLength });
+    }
+    if (opcode === 0x9) {
+      messages.push({ __ws_control: 'ping', payload });
+    }
     offset = cursor + payloadLength;
   }
 
@@ -137,6 +143,20 @@ function createSocketWrapper(socket) {
       const result = parseWebSocketFrames(buffered);
       buffered = result.remaining;
       for (const message of result.messages) {
+        if (typeof message === 'object' && message !== null && message.__ws_control) {
+          if (message.__ws_control === 'ping') {
+            const pongFrame = Buffer.alloc(2 + message.payload.length);
+            pongFrame[0] = 0x8A;
+            pongFrame[1] = message.payload.length;
+            message.payload.copy(pongFrame, 2);
+            socket.write(pongFrame);
+          }
+          if (message.__ws_control === 'close') {
+            wrapper.readyState = 3;
+            socket.end();
+          }
+          continue;
+        }
         emitter.emit('message', Buffer.from(message));
       }
     } catch (error) {

@@ -10314,6 +10314,12 @@ var require_wechatsync_bridge = __commonJS({
         if (opcode === 1) {
           messages.push(payload.toString("utf8"));
         }
+        if (opcode === 8) {
+          messages.push({ __ws_control: "close", code: payloadLength });
+        }
+        if (opcode === 9) {
+          messages.push({ __ws_control: "ping", payload });
+        }
         offset = cursor + payloadLength;
       }
       return {
@@ -10345,6 +10351,20 @@ var require_wechatsync_bridge = __commonJS({
           const result = parseWebSocketFrames(buffered);
           buffered = result.remaining;
           for (const message of result.messages) {
+            if (typeof message === "object" && message !== null && message.__ws_control) {
+              if (message.__ws_control === "ping") {
+                const pongFrame = Buffer.alloc(2 + message.payload.length);
+                pongFrame[0] = 138;
+                pongFrame[1] = message.payload.length;
+                message.payload.copy(pongFrame, 2);
+                socket.write(pongFrame);
+              }
+              if (message.__ws_control === "close") {
+                wrapper.readyState = 3;
+                socket.end();
+              }
+              continue;
+            }
             emitter.emit("message", Buffer.from(message));
           }
         } catch (error) {
@@ -15962,9 +15982,10 @@ var AppleStyleView = class extends ItemView {
             return true;
           }
         } catch (error) {
-          if (!isWechatSyncUnsupportedMethodError(error))
-            throw error;
-          console.warn("[Wechatsync] openSyncTask unsupported, falling back to task link", error);
+          console.warn("[Wechatsync] openSyncTask failed, falling back to task link", {
+            code: error == null ? void 0 : error.code,
+            message: (error == null ? void 0 : error.message) || String(error)
+          });
         }
       }
       if (capabilities.getSyncTaskLink !== false) {
@@ -15979,9 +16000,10 @@ var AppleStyleView = class extends ItemView {
             return false;
           }
         } catch (error) {
-          if (!isWechatSyncUnsupportedMethodError(error))
-            throw error;
-          console.warn("[Wechatsync] getSyncTaskLink unsupported", error);
+          console.warn("[Wechatsync] getSyncTaskLink failed", {
+            code: error == null ? void 0 : error.code,
+            message: (error == null ? void 0 : error.message) || String(error)
+          });
         }
       }
       new Notice(`\u8BF7\u5728 Wechatsync \u6D4F\u89C8\u5668\u6269\u5C55\u5386\u53F2\u8BB0\u5F55\u4E2D\u67E5\u770B\u4EFB\u52A1\uFF1A${taskId}`, 1e4);
