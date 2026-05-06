@@ -846,4 +846,5 @@ module.exports = {
   createReadableBridgeError,
   createWechatSyncBridgeService,
   isUnsupportedBridgeMethodError,
+  parseWebSocketFrames,
 };

@@ -5,6 +5,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import {
   createReadableBridgeError,
   createWechatSyncBridgeService,
+  parseWebSocketFrames,
 } from '../services/wechatsync-bridge.js';
 
 async function getFreePort() {
@@ -557,5 +558,97 @@ describe('Wechatsync bridge service', () => {
     expect(createReadableBridgeError(new Error('Request timeout: syncArticle')).code).toBe('SYNC_TIMEOUT');
     expect(createReadableBridgeError(new Error('Request timeout: enqueueSyncArticle')).code).toBe('BRIDGE_REQUEST_TIMEOUT');
     expect(createReadableBridgeError(new Error('Request timeout: getSyncTask')).code).toBe('BRIDGE_REQUEST_TIMEOUT');
+  });
+});
+
+describe('WebSocket frame parsing', () => {
+  function maskedFrame(opcode, payload) {
+    const length = payload.length;
+    let header;
+    if (length < 126) {
+      header = Buffer.from([0x80 | opcode, 0x80 | length]);
+    } else if (length < 65536) {
+      header = Buffer.alloc(4);
+      header[0] = 0x80 | opcode;
+      header[1] = 0x80 | 126;
+      header.writeUInt16BE(length, 2);
+    } else {
+      header = Buffer.alloc(10);
+      header[0] = 0x80 | opcode;
+      header[1] = 0x80 | 127;
+      header.writeBigUInt64BE(BigInt(length), 2);
+    }
+    const maskKey = Buffer.from([0x00, 0x00, 0x00, 0x00]);
+    return Buffer.concat([header, maskKey, payload]);
+  }
+
+  it('parses a text frame (opcode 0x1)', () => {
+    const frame = maskedFrame(0x1, Buffer.from('{"hello":"world"}'));
+    const result = parseWebSocketFrames(frame);
+    expect(result.messages).toEqual(['{"hello":"world"}']);
+    expect(result.remaining.length).toBe(0);
+  });
+
+  it('recognises a ping frame (opcode 0x9) as a control sentinel', () => {
+    const payload = Buffer.from('keepalive');
+    const frame = maskedFrame(0x9, payload);
+    const result = parseWebSocketFrames(frame);
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({
+      __ws_control: 'ping',
+    });
+    expect(result.messages[0].payload).toEqual(payload);
+  });
+
+  it('recognises a close frame (opcode 0x8) as a control sentinel', () => {
+    const payload = Buffer.from([0x03, 0xE8]);
+    const frame = maskedFrame(0x8, payload);
+    const result = parseWebSocketFrames(frame);
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({
+      __ws_control: 'close',
+      code: payload.length,
+    });
+  });
+
+  it('silently ignores a pong frame (opcode 0xA)', () => {
+    const frame = maskedFrame(0xA, Buffer.from('pong'));
+    const result = parseWebSocketFrames(frame);
+    expect(result.messages).toHaveLength(0);
+  });
+
+  it('handles multiple frames in a single buffer', () => {
+    const ping = maskedFrame(0x9, Buffer.from('abc'));
+    const text = maskedFrame(0x1, Buffer.from('hello'));
+    const close = maskedFrame(0x8, Buffer.from([0x03, 0xE8]));
+    const buffer = Buffer.concat([ping, text, close]);
+    const result = parseWebSocketFrames(buffer);
+
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[0]).toMatchObject({ __ws_control: 'ping' });
+    expect(result.messages[1]).toBe('hello');
+    expect(result.messages[2]).toMatchObject({ __ws_control: 'close' });
+  });
+
+  it('preserves partial frame data in remaining buffer', () => {
+    const fullFrame = maskedFrame(0x1, Buffer.from('complete'));
+    const partial = fullFrame.subarray(0, fullFrame.length - 3);
+    const result = parseWebSocketFrames(partial);
+    expect(result.messages).toHaveLength(0);
+    expect(result.remaining.length).toBe(partial.length);
+  });
+
+  it('unmasks ping payload with a non-zero mask key', () => {
+    const payload = Buffer.from([0x70, 0x69, 0x6E, 0x67]);
+    const maskKey = Buffer.from([0x12, 0x34, 0x56, 0x78]);
+    const opcode = 0x9;
+    const header = Buffer.from([0x80 | opcode, 0x80 | payload.length]);
+    const maskedPayload = Buffer.alloc(payload.length);
+    for (let i = 0; i < payload.length; i++) {
+      maskedPayload[i] = payload[i] ^ maskKey[i % 4];
+    }
+    const frame = Buffer.concat([header, maskKey, maskedPayload]);
+    const result = parseWebSocketFrames(frame);
+    expect(result.messages[0].payload).toEqual(payload);
   });
 });

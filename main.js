@@ -10984,7 +10984,8 @@ var require_wechatsync_bridge = __commonJS({
       DEFAULT_SYNC_REQUEST_TIMEOUT_MS,
       createReadableBridgeError,
       createWechatSyncBridgeService: createWechatSyncBridgeService2,
-      isUnsupportedBridgeMethodError
+      isUnsupportedBridgeMethodError,
+      parseWebSocketFrames
     };
   }
 });
