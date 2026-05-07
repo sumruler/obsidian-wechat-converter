@@ -10223,6 +10223,45 @@ var require_wechatsync_bridge = __commonJS({
       const message = String((error == null ? void 0 : error.message) || error || "");
       return /unknown method|unknown tool|method not found|not supported|unsupported/i.test(message);
     }
+    function isRecoverableBridgeConnectionError(error = {}) {
+      const code = (error == null ? void 0 : error.code) || "";
+      return ["EXTENSION_NOT_CONNECTED", "BRIDGE_UNAVAILABLE", "BRIDGE_REQUEST_TIMEOUT"].includes(code);
+    }
+    function sleep2(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    async function retryRecoverableBridgeOperation2(operation, options = {}) {
+      var _a;
+      const {
+        retries = 2,
+        delayMs = 1e3,
+        delay = sleep2,
+        shouldRetry = isRecoverableBridgeConnectionError,
+        logger = console,
+        label = "bridge request"
+      } = options;
+      let attempt = 0;
+      while (true) {
+        try {
+          return await operation({ attempt });
+        } catch (error) {
+          const readableError = createReadableBridgeError(error);
+          if (attempt >= retries || !shouldRetry(readableError, attempt)) {
+            throw readableError;
+          }
+          attempt += 1;
+          (_a = logger.debug) == null ? void 0 : _a.call(logger, "[WechatsyncBridge] retrying recoverable operation", {
+            label,
+            attempt,
+            retries,
+            delayMs,
+            code: readableError == null ? void 0 : readableError.code,
+            message: (readableError == null ? void 0 : readableError.message) || String(readableError)
+          });
+          await delay(delayMs, attempt, readableError);
+        }
+      }
+    }
     function createEmitter() {
       const listeners = /* @__PURE__ */ new Map();
       return {
@@ -10987,8 +11026,10 @@ var require_wechatsync_bridge = __commonJS({
       DEFAULT_SYNC_REQUEST_TIMEOUT_MS,
       createReadableBridgeError,
       createWechatSyncBridgeService: createWechatSyncBridgeService2,
+      isRecoverableBridgeConnectionError,
       isUnsupportedBridgeMethodError,
-      parseWebSocketFrames
+      parseWebSocketFrames,
+      retryRecoverableBridgeOperation: retryRecoverableBridgeOperation2
     };
   }
 });
@@ -12351,7 +12392,8 @@ var { createWechatSyncService } = require_wechat_sync();
 var {
   DEFAULT_WECHATSYNC_PORT,
   createWechatSyncBridgeService,
-  isUnsupportedBridgeMethodError: isWechatSyncUnsupportedMethodError
+  isUnsupportedBridgeMethodError: isWechatSyncUnsupportedMethodError,
+  retryRecoverableBridgeOperation
 } = require_wechatsync_bridge();
 var {
   getFallbackWechatsyncPlatforms,
@@ -17732,16 +17774,29 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
           let health = null;
           let capabilities = {};
           try {
-            health = await bridge.health({ timeoutMs: 5e3 });
+            health = await retryRecoverableBridgeOperation(async ({ attempt }) => {
+              if (attempt > 0) {
+                console.debug("[Wechatsync] retrying health after bridge recovery window", { attempt });
+              }
+              const healthResult = await bridge.health({ timeoutMs: 5e3 });
+              if ((healthResult == null ? void 0 : healthResult.tokenValid) === false) {
+                const authError = new Error("Wechatsync Token \u6821\u9A8C\u5931\u8D25\u3002\u8BF7\u786E\u8BA4 Obsidian \u4E0E\u6D4F\u89C8\u5668\u6269\u5C55\u4F7F\u7528\u540C\u4E00\u4E2A Token\u3002");
+                authError.code = "AUTH_FAILED";
+                throw authError;
+              }
+              if ((healthResult == null ? void 0 : healthResult.ok) === false) {
+                const healthError = new Error(healthResult.error || "Wechatsync health check failed");
+                healthError.code = "BRIDGE_REQUEST_TIMEOUT";
+                throw healthError;
+              }
+              return healthResult;
+            }, {
+              retries: 2,
+              delayMs: 1e3,
+              logger: console,
+              label: "settings health"
+            });
             console.debug("[Wechatsync] health result", health);
-            if ((health == null ? void 0 : health.ok) === false) {
-              throw new Error(health.error || "Wechatsync health check failed");
-            }
-            if ((health == null ? void 0 : health.tokenValid) === false) {
-              const authError = new Error("Wechatsync Token \u6821\u9A8C\u5931\u8D25\u3002\u8BF7\u786E\u8BA4 Obsidian \u4E0E\u6D4F\u89C8\u5668\u6269\u5C55\u4F7F\u7528\u540C\u4E00\u4E2A Token\u3002");
-              authError.code = "AUTH_FAILED";
-              throw authError;
-            }
             capabilities = normalizeWechatSyncCapabilities(health == null ? void 0 : health.capabilities);
           } catch (healthError) {
             if (!isWechatSyncUnsupportedMethodError(healthError))
@@ -17827,7 +17882,7 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
             }
           });
           await this.plugin.saveSettings();
-          const hint = (error == null ? void 0 : error.code) === "EXTENSION_NOT_CONNECTED" ? "\u5982\u679C\u6D4F\u89C8\u5668\u6269\u5C55\u5DF2\u5F00\u542F MCP/CLI\uFF0C\u8BF7\u786E\u8BA4\u6269\u5C55\u91CC\u7684\u670D\u52A1\u5668\u5730\u5740\u7AEF\u53E3\u4E0E\u8FD9\u91CC\u4E00\u81F4\uFF0C\u6216\u5173\u95ED\u518D\u5F00\u542F\u4E00\u6B21\u6269\u5C55 MCP/CLI \u540E\u91CD\u8BD5\u3002" : "";
+          const hint = ["EXTENSION_NOT_CONNECTED", "BRIDGE_UNAVAILABLE", "BRIDGE_REQUEST_TIMEOUT"].includes(error == null ? void 0 : error.code) ? "\u8BF7\u5230 Wechatsync \u6D4F\u89C8\u5668\u63D2\u4EF6\u91CC\u68C0\u67E5\u300CCLI / MCP \u8FDE\u63A5\u300D\u662F\u5426\u5DF2\u5F00\u542F\uFF0C\u5E76\u786E\u8BA4\u6D4F\u89C8\u5668\u6B63\u5728\u8FD0\u884C\u3001MCP Server \u5730\u5740/\u7AEF\u53E3\u548C Token \u4E0E\u8FD9\u91CC\u4E00\u81F4\u3002" : "";
           new Notice(`\u274C Wechatsync \u8FDE\u63A5\u5931\u8D25\uFF1A${error.message}${hint ? ` ${hint}` : ""}`, 12e3);
         } finally {
           (_g = button.setDisabled) == null ? void 0 : _g.call(button, false);

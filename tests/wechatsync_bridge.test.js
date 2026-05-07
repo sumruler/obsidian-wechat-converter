@@ -5,8 +5,10 @@ import { WebSocket, WebSocketServer } from 'ws';
 import {
   createReadableBridgeError,
   createWechatSyncBridgeService,
+  isRecoverableBridgeConnectionError,
   isUnsupportedBridgeMethodError,
   parseWebSocketFrames,
+  retryRecoverableBridgeOperation,
 } from '../services/wechatsync-bridge.js';
 
 async function getFreePort() {
@@ -567,6 +569,61 @@ describe('Wechatsync bridge service', () => {
     expect(isUnsupportedBridgeMethodError(createReadableBridgeError(new Error('Invalid or missing token')))).toBe(false);
     expect(isUnsupportedBridgeMethodError(createReadableBridgeError(new Error('Extension not connected')))).toBe(false);
     expect(isUnsupportedBridgeMethodError(createReadableBridgeError(new Error('Request timeout: openSyncTask')))).toBe(false);
+  });
+
+  it('retries short-lived recoverable bridge failures before succeeding', async () => {
+    const attempts = [];
+    const delays = [];
+    const result = await retryRecoverableBridgeOperation(async ({ attempt }) => {
+      attempts.push(attempt);
+      if (attempt < 2) throw createReadableBridgeError(new Error('Extension not connected'));
+      return { ok: true };
+    }, {
+      retries: 2,
+      delayMs: 25,
+      delay: async (delayMs, attempt, error) => {
+        delays.push({ delayMs, attempt, code: error.code });
+      },
+      logger: { debug() {} },
+      label: 'health',
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(attempts).toEqual([0, 1, 2]);
+    expect(delays).toEqual([
+      { delayMs: 25, attempt: 1, code: 'EXTENSION_NOT_CONNECTED' },
+      { delayMs: 25, attempt: 2, code: 'EXTENSION_NOT_CONNECTED' },
+    ]);
+  });
+
+  it('does not retry auth or unsupported-method failures', async () => {
+    await expect(retryRecoverableBridgeOperation(async () => {
+      throw createReadableBridgeError(new Error('Invalid or missing token'));
+    }, {
+      retries: 2,
+      delay: async () => {
+        throw new Error('delay should not run');
+      },
+      logger: { debug() {} },
+    })).rejects.toMatchObject({ code: 'AUTH_FAILED' });
+
+    await expect(retryRecoverableBridgeOperation(async () => {
+      throw new Error('unknown method: health');
+    }, {
+      retries: 2,
+      delay: async () => {
+        throw new Error('delay should not run');
+      },
+      logger: { debug() {} },
+    })).rejects.toThrow(/unknown method/);
+  });
+
+  it('classifies only connection recovery errors as retryable', () => {
+    expect(isRecoverableBridgeConnectionError(createReadableBridgeError(new Error('Extension not connected')))).toBe(true);
+    expect(isRecoverableBridgeConnectionError(createReadableBridgeError(new Error('Request timeout: health')))).toBe(true);
+    expect(isRecoverableBridgeConnectionError(createReadableBridgeError(new Error('ECONNREFUSED')))).toBe(true);
+    expect(isRecoverableBridgeConnectionError(createReadableBridgeError(new Error('Invalid or missing token')))).toBe(false);
+    expect(isRecoverableBridgeConnectionError(new Error('unknown method: health'))).toBe(false);
   });
 });
 

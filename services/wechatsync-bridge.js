@@ -10,6 +10,48 @@ function isUnsupportedBridgeMethodError(error = {}) {
   return /unknown method|unknown tool|method not found|not supported|unsupported/i.test(message);
 }
 
+function isRecoverableBridgeConnectionError(error = {}) {
+  const code = error?.code || '';
+  return ['EXTENSION_NOT_CONNECTED', 'BRIDGE_UNAVAILABLE', 'BRIDGE_REQUEST_TIMEOUT'].includes(code);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function retryRecoverableBridgeOperation(operation, options = {}) {
+  const {
+    retries = 2,
+    delayMs = 1000,
+    delay = sleep,
+    shouldRetry = isRecoverableBridgeConnectionError,
+    logger = console,
+    label = 'bridge request',
+  } = options;
+  let attempt = 0;
+
+  while (true) {
+    try {
+      return await operation({ attempt });
+    } catch (error) {
+      const readableError = createReadableBridgeError(error);
+      if (attempt >= retries || !shouldRetry(readableError, attempt)) {
+        throw readableError;
+      }
+      attempt += 1;
+      logger.debug?.('[WechatsyncBridge] retrying recoverable operation', {
+        label,
+        attempt,
+        retries,
+        delayMs,
+        code: readableError?.code,
+        message: readableError?.message || String(readableError),
+      });
+      await delay(delayMs, attempt, readableError);
+    }
+  }
+}
+
 function createEmitter() {
   const listeners = new Map();
   return {
@@ -848,6 +890,8 @@ module.exports = {
   DEFAULT_SYNC_REQUEST_TIMEOUT_MS,
   createReadableBridgeError,
   createWechatSyncBridgeService,
+  isRecoverableBridgeConnectionError,
   isUnsupportedBridgeMethodError,
   parseWebSocketFrames,
+  retryRecoverableBridgeOperation,
 };

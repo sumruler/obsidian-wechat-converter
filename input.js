@@ -40,6 +40,7 @@ const {
   DEFAULT_WECHATSYNC_PORT,
   createWechatSyncBridgeService,
   isUnsupportedBridgeMethodError: isWechatSyncUnsupportedMethodError,
+  retryRecoverableBridgeOperation,
 } = require('./services/wechatsync-bridge');
 const {
   getFallbackWechatsyncPlatforms,
@@ -6247,16 +6248,29 @@ class AppleStyleSettingTab extends PluginSettingTab {
               let health = null;
               let capabilities = {};
               try {
-                health = await bridge.health({ timeoutMs: 5000 });
+                health = await retryRecoverableBridgeOperation(async ({ attempt }) => {
+                  if (attempt > 0) {
+                    console.debug('[Wechatsync] retrying health after bridge recovery window', { attempt });
+                  }
+                  const healthResult = await bridge.health({ timeoutMs: 5000 });
+                  if (healthResult?.tokenValid === false) {
+                    const authError = new Error('Wechatsync Token 校验失败。请确认 Obsidian 与浏览器扩展使用同一个 Token。');
+                    authError.code = 'AUTH_FAILED';
+                    throw authError;
+                  }
+                  if (healthResult?.ok === false) {
+                    const healthError = new Error(healthResult.error || 'Wechatsync health check failed');
+                    healthError.code = 'BRIDGE_REQUEST_TIMEOUT';
+                    throw healthError;
+                  }
+                  return healthResult;
+                }, {
+                  retries: 2,
+                  delayMs: 1000,
+                  logger: console,
+                  label: 'settings health',
+                });
                 console.debug('[Wechatsync] health result', health);
-                if (health?.ok === false) {
-                  throw new Error(health.error || 'Wechatsync health check failed');
-                }
-                if (health?.tokenValid === false) {
-                  const authError = new Error('Wechatsync Token 校验失败。请确认 Obsidian 与浏览器扩展使用同一个 Token。');
-                  authError.code = 'AUTH_FAILED';
-                  throw authError;
-                }
                 capabilities = normalizeWechatSyncCapabilities(health?.capabilities);
               } catch (healthError) {
                 if (!isWechatSyncUnsupportedMethodError(healthError)) throw healthError;
@@ -6349,8 +6363,8 @@ class AppleStyleSettingTab extends PluginSettingTab {
                 },
               });
               await this.plugin.saveSettings();
-              const hint = error?.code === 'EXTENSION_NOT_CONNECTED'
-                ? '如果浏览器扩展已开启 MCP/CLI，请确认扩展里的服务器地址端口与这里一致，或关闭再开启一次扩展 MCP/CLI 后重试。'
+              const hint = ['EXTENSION_NOT_CONNECTED', 'BRIDGE_UNAVAILABLE', 'BRIDGE_REQUEST_TIMEOUT'].includes(error?.code)
+                ? '请到 Wechatsync 浏览器插件里检查「CLI / MCP 连接」是否已开启，并确认浏览器正在运行、MCP Server 地址/端口和 Token 与这里一致。'
                 : '';
               new Notice(`❌ Wechatsync 连接失败：${error.message}${hint ? ` ${hint}` : ''}`, 12000);
             } finally {
