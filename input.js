@@ -39,6 +39,7 @@ const { createWechatSyncService } = require('./services/wechat-sync');
 const {
   DEFAULT_WECHATSYNC_PORT,
   createWechatSyncBridgeService,
+  isUnsupportedBridgeMethodError: isWechatSyncUnsupportedMethodError,
 } = require('./services/wechatsync-bridge');
 const {
   getFallbackWechatsyncPlatforms,
@@ -116,11 +117,6 @@ function mergeWechatsyncPlatformLists(...lists) {
     }
   }
   return Array.from(byId.values());
-}
-
-function isWechatSyncUnsupportedMethodError(error = {}) {
-  const message = String(error?.message || error || '');
-  return /unknown method|unknown tool|method not found|not supported|unsupported/i.test(message);
 }
 
 function normalizeWechatSyncCapabilities(value = {}) {
@@ -4186,6 +4182,7 @@ class AppleStyleView extends ItemView {
             return true;
           }
         } catch (error) {
+          if (!isWechatSyncUnsupportedMethodError(error)) throw error;
           console.warn('[Wechatsync] openSyncTask failed, falling back to task link', {
             code: error?.code,
             message: error?.message || String(error),
@@ -4205,6 +4202,7 @@ class AppleStyleView extends ItemView {
             return false;
           }
         } catch (error) {
+          if (!isWechatSyncUnsupportedMethodError(error)) throw error;
           console.warn('[Wechatsync] getSyncTaskLink failed', {
             code: error?.code,
             message: error?.message || String(error),

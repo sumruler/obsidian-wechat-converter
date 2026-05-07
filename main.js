@@ -10315,7 +10315,10 @@ var require_wechatsync_bridge = __commonJS({
           messages.push(payload.toString("utf8"));
         }
         if (opcode === 8) {
-          messages.push({ __ws_control: "close", code: payloadLength });
+          messages.push({
+            __ws_control: "close",
+            code: payload.length >= 2 ? payload.readUInt16BE(0) : void 0
+          });
         }
         if (opcode === 9) {
           messages.push({ __ws_control: "ping", payload });
@@ -12347,7 +12350,8 @@ var {
 var { createWechatSyncService } = require_wechat_sync();
 var {
   DEFAULT_WECHATSYNC_PORT,
-  createWechatSyncBridgeService
+  createWechatSyncBridgeService,
+  isUnsupportedBridgeMethodError: isWechatSyncUnsupportedMethodError
 } = require_wechatsync_bridge();
 var {
   getFallbackWechatsyncPlatforms,
@@ -12418,10 +12422,6 @@ function mergeWechatsyncPlatformLists(...lists) {
     }
   }
   return Array.from(byId.values());
-}
-function isWechatSyncUnsupportedMethodError(error = {}) {
-  const message = String((error == null ? void 0 : error.message) || error || "");
-  return /unknown method|unknown tool|method not found|not supported|unsupported/i.test(message);
 }
 function normalizeWechatSyncCapabilities(value = {}) {
   const source = value && typeof value === "object" ? value : {};
@@ -15976,6 +15976,8 @@ var AppleStyleView = class extends ItemView {
             return true;
           }
         } catch (error) {
+          if (!isWechatSyncUnsupportedMethodError(error))
+            throw error;
           console.warn("[Wechatsync] openSyncTask failed, falling back to task link", {
             code: error == null ? void 0 : error.code,
             message: (error == null ? void 0 : error.message) || String(error)
@@ -15994,6 +15996,8 @@ var AppleStyleView = class extends ItemView {
             return false;
           }
         } catch (error) {
+          if (!isWechatSyncUnsupportedMethodError(error))
+            throw error;
           console.warn("[Wechatsync] getSyncTaskLink failed", {
             code: error == null ? void 0 : error.code,
             message: (error == null ? void 0 : error.message) || String(error)

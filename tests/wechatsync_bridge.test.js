@@ -5,6 +5,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import {
   createReadableBridgeError,
   createWechatSyncBridgeService,
+  isUnsupportedBridgeMethodError,
   parseWebSocketFrames,
 } from '../services/wechatsync-bridge.js';
 
@@ -559,6 +560,14 @@ describe('Wechatsync bridge service', () => {
     expect(createReadableBridgeError(new Error('Request timeout: enqueueSyncArticle')).code).toBe('BRIDGE_REQUEST_TIMEOUT');
     expect(createReadableBridgeError(new Error('Request timeout: getSyncTask')).code).toBe('BRIDGE_REQUEST_TIMEOUT');
   });
+
+  it('only treats unsupported methods as fallback-safe task action errors', () => {
+    expect(isUnsupportedBridgeMethodError(new Error('unknown method: openSyncTask'))).toBe(true);
+    expect(isUnsupportedBridgeMethodError(new Error('method not found: getSyncTaskLink'))).toBe(true);
+    expect(isUnsupportedBridgeMethodError(createReadableBridgeError(new Error('Invalid or missing token')))).toBe(false);
+    expect(isUnsupportedBridgeMethodError(createReadableBridgeError(new Error('Extension not connected')))).toBe(false);
+    expect(isUnsupportedBridgeMethodError(createReadableBridgeError(new Error('Request timeout: openSyncTask')))).toBe(false);
+  });
 });
 
 describe('WebSocket frame parsing', () => {
@@ -607,8 +616,18 @@ describe('WebSocket frame parsing', () => {
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0]).toMatchObject({
       __ws_control: 'close',
-      code: payload.length,
+      code: 1000,
     });
+  });
+
+  it('leaves close code empty when close payload has no status code', () => {
+    const frame = maskedFrame(0x8, Buffer.alloc(0));
+    const result = parseWebSocketFrames(frame);
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({
+      __ws_control: 'close',
+    });
+    expect(result.messages[0].code).toBeUndefined();
   });
 
   it('silently ignores a pong frame (opcode 0xA)', () => {

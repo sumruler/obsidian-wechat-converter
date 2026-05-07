@@ -105,7 +105,10 @@ function parseWebSocketFrames(buffer) {
       messages.push(payload.toString('utf8'));
     }
     if (opcode === 0x8) {
-      messages.push({ __ws_control: 'close', code: payloadLength });
+      messages.push({
+        __ws_control: 'close',
+        code: payload.length >= 2 ? payload.readUInt16BE(0) : undefined,
+      });
     }
     if (opcode === 0x9) {
       messages.push({ __ws_control: 'ping', payload });
