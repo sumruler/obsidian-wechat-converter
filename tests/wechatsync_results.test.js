@@ -88,6 +88,25 @@ describe('Wechatsync result helpers', () => {
     });
   });
 
+  it('keeps explicit unknown auth snapshot entries as unknown', () => {
+    const platform = normalizeWechatsyncPlatform({
+      id: 'juejin',
+      name: '掘金',
+      authKnown: false,
+      authenticated: false,
+    });
+
+    expect(platform).toMatchObject({
+      id: 'juejin',
+      authKnown: false,
+      authenticated: false,
+    });
+    expect(getWechatsyncPlatformStatusBadge(platform)).toMatchObject({
+      status: 'unknown',
+      text: '未检测',
+    });
+  });
+
   it('normalizes single-platform checkAuth results with fallback metadata', () => {
     expect(normalizeWechatsyncCheckAuthResult(
       { id: 'zhihu', name: '知乎' },

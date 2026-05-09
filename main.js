@@ -11102,7 +11102,8 @@ var require_wechatsync_results = __commonJS({
       const user = platform.user && typeof platform.user === "object" ? platform.user : {};
       const rawStatus = String(platform.status || platform.authStatus || platform.authState || "").trim();
       const authStatus = ["available", "login_required", "unknown", "bridge_required"].includes(rawStatus) ? rawStatus : "";
-      const authKnown = platform.authKnown === true || Object.prototype.hasOwnProperty.call(platform, "isAuthenticated") || Object.prototype.hasOwnProperty.call(platform, "authenticated") || Object.prototype.hasOwnProperty.call(platform, "isAuth") || Object.prototype.hasOwnProperty.call(platform, "loggedIn") || Object.prototype.hasOwnProperty.call(nestedAuth, "isAuthenticated") || Object.prototype.hasOwnProperty.call(nestedAuth, "authenticated") || Object.prototype.hasOwnProperty.call(nestedAuth, "loggedIn") || typeof platform.status === "string";
+      const hasExplicitAuthKnown = Object.prototype.hasOwnProperty.call(platform, "authKnown");
+      const authKnown = hasExplicitAuthKnown ? platform.authKnown === true : Object.prototype.hasOwnProperty.call(platform, "isAuthenticated") || Object.prototype.hasOwnProperty.call(platform, "authenticated") || Object.prototype.hasOwnProperty.call(platform, "isAuth") || Object.prototype.hasOwnProperty.call(platform, "loggedIn") || Object.prototype.hasOwnProperty.call(nestedAuth, "isAuthenticated") || Object.prototype.hasOwnProperty.call(nestedAuth, "authenticated") || Object.prototype.hasOwnProperty.call(nestedAuth, "loggedIn") || typeof platform.status === "string";
       return {
         id,
         name: String(platform.name || platform.title || platform.platformName || id),
@@ -16490,13 +16491,16 @@ var AppleStyleView = class extends ItemView {
       }
       for (const platform of normalizedPlatforms) {
         const authInfo = getWechatsyncPlatformStatusBadge(platform, { bridgeConnected: isBridgeReady });
-        const row = platformListEl.createDiv({ cls: `wechat-multiplatform-platform ${authInfo.cls}` });
+        const isSelected = isBridgeReady && defaultSelectedPlatforms.has(platform.id);
+        const row = platformListEl.createDiv({
+          cls: `wechat-multiplatform-platform ${isSelected ? authInfo.cls : ""}`
+        });
         const checkbox = row.createEl("input");
         checkbox.type = "checkbox";
         checkbox.value = platform.id;
-        checkbox.checked = isBridgeReady && defaultSelectedPlatforms.has(platform.id);
+        checkbox.checked = isSelected;
         checkbox.disabled = !isBridgeReady;
-        if (checkbox.checked)
+        if (isSelected)
           selectedPlatforms.add(platform.id);
         const label = row.createEl("label", { cls: "wechat-multiplatform-platform-label" });
         label.createEl("span", { text: platform.name, cls: "wechat-multiplatform-platform-name" });
@@ -16507,10 +16511,28 @@ var AppleStyleView = class extends ItemView {
             cls: "wechat-multiplatform-platform-capabilities"
           });
         }
-        label.createEl("span", {
-          text: authInfo.text,
-          cls: `wechat-multiplatform-platform-status ${authInfo.cls}`
+        const statusEl2 = label.createEl("span", {
+          text: isSelected ? authInfo.text : "",
+          cls: `wechat-multiplatform-platform-status ${isSelected ? authInfo.cls : ""}`
         });
+        statusEl2.style.display = isSelected ? "" : "none";
+        const setStatusVisible = (visible) => {
+          var _a2, _b, _c, _d, _e, _f, _g, _h;
+          for (const cls of ["is-ok", "is-error", "is-unknown", "is-bridge"]) {
+            (_a2 = row.removeClass) == null ? void 0 : _a2.call(row, cls);
+            (_b = row.classList) == null ? void 0 : _b.remove(cls);
+            (_c = statusEl2.removeClass) == null ? void 0 : _c.call(statusEl2, cls);
+            (_d = statusEl2.classList) == null ? void 0 : _d.remove(cls);
+          }
+          statusEl2.textContent = visible ? authInfo.text : "";
+          statusEl2.style.display = visible ? "" : "none";
+          if (visible) {
+            (_e = row.addClass) == null ? void 0 : _e.call(row, authInfo.cls);
+            (_f = row.classList) == null ? void 0 : _f.add(authInfo.cls);
+            (_g = statusEl2.addClass) == null ? void 0 : _g.call(statusEl2, authInfo.cls);
+            (_h = statusEl2.classList) == null ? void 0 : _h.add(authInfo.cls);
+          }
+        };
         label.onclick = () => {
           if (!checkbox.disabled)
             checkbox.click();
@@ -16518,6 +16540,7 @@ var AppleStyleView = class extends ItemView {
         checkbox.onchange = () => {
           if (checkbox.checked) {
             selectedPlatforms.add(platform.id);
+            setStatusVisible(true);
             if (authInfo.status === "login_required") {
               new Notice(`${platform.name} \u4E0A\u6B21\u72B6\u6001\u4E3A\u9700\u767B\u5F55\u3002\u8BF7\u5148\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u6253\u5F00\u5E73\u53F0\u767B\u5F55\u9875\uFF0C\u6216\u7EE7\u7EED\u5C1D\u8BD5\u7531\u6269\u5C55\u8FD4\u56DE\u5B9E\u9645\u7ED3\u679C\u3002`, 8e3);
             }
@@ -16526,6 +16549,7 @@ var AppleStyleView = class extends ItemView {
             }
           } else {
             selectedPlatforms.delete(platform.id);
+            setStatusVisible(false);
           }
           updateSyncButtonState();
         };
@@ -17853,11 +17877,12 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
       };
       for (const platform of availablePlatforms) {
         const authBadge = getPlatformAuthBadge(platform);
+        const isSelected = selectedPlatformSet.has(platform.id);
         const chip = platformGrid.createEl("label", {
-          cls: `wechat-platform-chip ${authBadge.cls}${selectedPlatformSet.has(platform.id) ? " is-selected" : ""}`
+          cls: `wechat-platform-chip ${isSelected ? `${authBadge.cls} is-selected` : ""}`
         });
         const checkbox = chip.createEl("input", { attr: { type: "checkbox" } });
-        checkbox.checked = selectedPlatformSet.has(platform.id);
+        checkbox.checked = isSelected;
         checkbox.value = platform.id;
         const chipBody = chip.createEl("span", { cls: "wechat-platform-chip-body" });
         chipBody.createEl("span", { text: platform.name, cls: "wechat-platform-chip-name" });
@@ -17868,20 +17893,40 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
             cls: "wechat-platform-chip-capabilities"
           });
         }
-        chipBody.createEl("span", {
-          text: authBadge.text,
-          cls: `wechat-platform-chip-status ${authBadge.cls}`
+        const statusEl = chipBody.createEl("span", {
+          text: isSelected ? authBadge.text : "",
+          cls: `wechat-platform-chip-status ${isSelected ? authBadge.cls : ""}`
         });
+        statusEl.style.display = isSelected ? "" : "none";
+        const setStatusVisible = (visible) => {
+          var _a2, _b2, _c, _d, _e, _f, _g, _h;
+          for (const cls of ["is-ok", "is-error", "is-unknown", "is-bridge"]) {
+            (_a2 = chip.removeClass) == null ? void 0 : _a2.call(chip, cls);
+            (_b2 = chip.classList) == null ? void 0 : _b2.remove(cls);
+            (_c = statusEl.removeClass) == null ? void 0 : _c.call(statusEl, cls);
+            (_d = statusEl.classList) == null ? void 0 : _d.remove(cls);
+          }
+          statusEl.textContent = visible ? authBadge.text : "";
+          statusEl.style.display = visible ? "" : "none";
+          if (visible) {
+            (_e = chip.addClass) == null ? void 0 : _e.call(chip, authBadge.cls);
+            (_f = chip.classList) == null ? void 0 : _f.add(authBadge.cls);
+            (_g = statusEl.addClass) == null ? void 0 : _g.call(statusEl, authBadge.cls);
+            (_h = statusEl.classList) == null ? void 0 : _h.add(authBadge.cls);
+          }
+        };
         checkbox.onchange = async () => {
           if (checkbox.checked) {
             selectedPlatformSet.add(platform.id);
             chip.addClass("is-selected");
+            setStatusVisible(true);
             if (authBadge.status === "login_required") {
               new Notice(`${platform.name} \u4E0A\u6B21\u72B6\u6001\u4E3A\u9700\u767B\u5F55\u3002\u8BF7\u5148\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u6253\u5F00\u5E73\u53F0\u767B\u5F55\u9875\uFF0C\u6216\u7EE7\u7EED\u5C1D\u8BD5\u7531\u6269\u5C55\u8FD4\u56DE\u5B9E\u9645\u7ED3\u679C\u3002`, 8e3);
             }
           } else {
             selectedPlatformSet.delete(platform.id);
             chip.removeClass("is-selected");
+            setStatusVisible(false);
           }
           updatePlatformSummary();
           await saveSelectedPlatforms();
@@ -17960,26 +18005,30 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
             currentBeforeTest.supportedPlatforms,
             getFallbackWechatsyncPlatforms()
           );
+          const selectedPlatformIds = parseWechatsyncPlatformIds(currentBeforeTest.selectedPlatforms || []);
           let authSnapshot = null;
-          try {
-            authSnapshot = await getAuthSnapshotFromExtension(
-              bridge,
-              platformFallbacks.map((platform) => platform.id),
-              platformFallbacks
-            );
-            capabilities = { ...capabilities, getAuthSnapshot: true };
-            console.debug("[Wechatsync] auth snapshot loaded", {
-              checkedAt: authSnapshot.checkedAt,
-              ...summarizeWechatsyncPlatformResponse(authSnapshot.platforms)
-            });
-          } catch (snapshotError) {
-            if (isWechatSyncUnsupportedMethodError(snapshotError)) {
-              capabilities = { ...capabilities, getAuthSnapshot: false };
+          if (selectedPlatformIds.length > 0) {
+            try {
+              authSnapshot = await getAuthSnapshotFromExtension(
+                bridge,
+                selectedPlatformIds,
+                platformFallbacks
+              );
+              capabilities = { ...capabilities, getAuthSnapshot: true };
+              console.debug("[Wechatsync] selected auth snapshot loaded", {
+                checkedAt: authSnapshot.checkedAt,
+                selectedPlatformIds,
+                ...summarizeWechatsyncPlatformResponse(authSnapshot.platforms)
+              });
+            } catch (snapshotError) {
+              if (isWechatSyncUnsupportedMethodError(snapshotError)) {
+                capabilities = { ...capabilities, getAuthSnapshot: false };
+              }
+              console.warn("[Wechatsync] getAuthSnapshot failed, keeping existing selected auth state", snapshotError);
             }
-            console.warn("[Wechatsync] getAuthSnapshot failed, keeping existing cached auth state", snapshotError);
           }
           const current = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
-          const nextPlatforms = ((_d = authSnapshot == null ? void 0 : authSnapshot.platforms) == null ? void 0 : _d.length) ? authSnapshot.platforms : current.connection.platforms;
+          const nextPlatforms = ((_d = authSnapshot == null ? void 0 : authSnapshot.platforms) == null ? void 0 : _d.length) ? authSnapshot.platforms : normalizeWechatsyncPlatformList(current.connection.platforms || []).filter((platform) => selectedPlatformIds.includes(platform.id));
           const connectionCheckedAt = (authSnapshot == null ? void 0 : authSnapshot.checkedAt) || Date.now();
           this.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
             ...current,
@@ -17990,7 +18039,7 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
               checkedAt: connectionCheckedAt,
               platforms: nextPlatforms,
               capabilities,
-              message: health ? ((_e = authSnapshot == null ? void 0 : authSnapshot.platforms) == null ? void 0 : _e.length) ? "\u6865\u63A5\u5DF2\u8FDE\u63A5\uFF0CToken \u5DF2\u901A\u8FC7\u6269\u5C55\u6821\u9A8C\uFF0C\u5E76\u8BFB\u53D6\u4E86\u6269\u5C55\u7F13\u5B58\u7684\u767B\u5F55\u72B6\u6001\u3002" : "\u6865\u63A5\u5DF2\u8FDE\u63A5\uFF0CToken \u5DF2\u901A\u8FC7\u6269\u5C55\u6821\u9A8C\u3002\u5E73\u53F0\u767B\u5F55\u72B6\u6001\u672A\u81EA\u52A8\u68C0\u6D4B\u3002" : "\u6865\u63A5\u5DF2\u8FDE\u63A5\u3002\u5F53\u524D\u6269\u5C55\u7248\u672C\u672A\u63D0\u4F9B health \u6821\u9A8C\uFF0C\u5E73\u53F0\u767B\u5F55\u72B6\u6001\u672A\u81EA\u52A8\u68C0\u6D4B\u3002"
+              message: health ? ((_e = authSnapshot == null ? void 0 : authSnapshot.platforms) == null ? void 0 : _e.length) ? "\u6865\u63A5\u5DF2\u8FDE\u63A5\uFF0CToken \u5DF2\u901A\u8FC7\u6269\u5C55\u6821\u9A8C\uFF0C\u5E76\u8BFB\u53D6\u4E86\u5DF2\u9009\u5E73\u53F0\u7684\u4E0A\u6B21\u72B6\u6001\u3002" : "\u6865\u63A5\u5DF2\u8FDE\u63A5\uFF0CToken \u5DF2\u901A\u8FC7\u6269\u5C55\u6821\u9A8C\u3002\u672A\u68C0\u6D4B\u5E73\u53F0\u767B\u5F55\u72B6\u6001\u3002" : "\u6865\u63A5\u5DF2\u8FDE\u63A5\u3002\u5F53\u524D\u6269\u5C55\u7248\u672C\u672A\u63D0\u4F9B health \u6821\u9A8C\uFF0C\u5E73\u53F0\u767B\u5F55\u72B6\u6001\u672A\u81EA\u52A8\u68C0\u6D4B\u3002"
             }
           });
           await this.plugin.saveSettings();
@@ -18032,7 +18081,7 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
         }
       }));
       new Setting(containerEl).setName("\u8BCA\u65AD\u5DF2\u9009\u5E73\u53F0\u767B\u5F55\u72B6\u6001").setDesc("\u53EF\u9009\u8BCA\u65AD\u3002\u53EA\u68C0\u6D4B\u4E0A\u65B9\u5DF2\u52FE\u9009\u7684\u5E73\u53F0\uFF0C\u7ED3\u679C\u4F5C\u4E3A\u4E0A\u6B21\u72B6\u6001\u63D0\u793A\uFF1B\u4E0D\u9700\u8981\u6BCF\u6B21\u53D1\u5E03\u524D\u624B\u52A8\u68C0\u6D4B\u3002").addButton((button) => button.setButtonText("\u8BCA\u65AD").onClick(async () => {
-        var _a2, _b2, _c;
+        var _a2, _b2;
         const current = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
         const platformById = new Map(
           getAvailableWechatsyncPlatforms(current).map((platform) => [platform.id, platform])
@@ -18078,7 +18127,7 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
               ...current.connection,
               status: "connected",
               checkedAt: Date.now(),
-              platforms: mergeWechatsyncPlatformLists(((_b2 = current.connection) == null ? void 0 : _b2.platforms) || [], usablePlatforms),
+              platforms: usablePlatforms,
               message: "\u5DF2\u8BCA\u65AD\u6240\u9009\u5E73\u53F0\u767B\u5F55\u72B6\u6001\u3002"
             }
           });
@@ -18094,7 +18143,7 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
           });
           new Notice(`\u274C \u8BCA\u65AD\u5931\u8D25\uFF1A${error.message}`, 1e4);
         } finally {
-          (_c = button.setDisabled) == null ? void 0 : _c.call(button, false);
+          (_b2 = button.setDisabled) == null ? void 0 : _b2.call(button, false);
           button.setButtonText("\u8BCA\u65AD");
         }
       }));

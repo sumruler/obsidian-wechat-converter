@@ -4613,13 +4613,16 @@ class AppleStyleView extends ItemView {
 
       for (const platform of normalizedPlatforms) {
         const authInfo = getWechatsyncPlatformStatusBadge(platform, { bridgeConnected: isBridgeReady });
-        const row = platformListEl.createDiv({ cls: `wechat-multiplatform-platform ${authInfo.cls}` });
+        const isSelected = isBridgeReady && defaultSelectedPlatforms.has(platform.id);
+        const row = platformListEl.createDiv({
+          cls: `wechat-multiplatform-platform ${isSelected ? authInfo.cls : ''}`,
+        });
         const checkbox = row.createEl('input');
         checkbox.type = 'checkbox';
         checkbox.value = platform.id;
-        checkbox.checked = isBridgeReady && defaultSelectedPlatforms.has(platform.id);
+        checkbox.checked = isSelected;
         checkbox.disabled = !isBridgeReady;
-        if (checkbox.checked) selectedPlatforms.add(platform.id);
+        if (isSelected) selectedPlatforms.add(platform.id);
         const label = row.createEl('label', { cls: 'wechat-multiplatform-platform-label' });
         label.createEl('span', { text: platform.name, cls: 'wechat-multiplatform-platform-name' });
         const capabilityLabels = formatWechatsyncCapabilityLabels(platform.capabilities);
@@ -4629,16 +4632,34 @@ class AppleStyleView extends ItemView {
             cls: 'wechat-multiplatform-platform-capabilities',
           });
         }
-        label.createEl('span', {
-          text: authInfo.text,
-          cls: `wechat-multiplatform-platform-status ${authInfo.cls}`,
+        const statusEl = label.createEl('span', {
+          text: isSelected ? authInfo.text : '',
+          cls: `wechat-multiplatform-platform-status ${isSelected ? authInfo.cls : ''}`,
         });
+        statusEl.style.display = isSelected ? '' : 'none';
+        const setStatusVisible = (visible) => {
+          for (const cls of ['is-ok', 'is-error', 'is-unknown', 'is-bridge']) {
+            row.removeClass?.(cls);
+            row.classList?.remove(cls);
+            statusEl.removeClass?.(cls);
+            statusEl.classList?.remove(cls);
+          }
+          statusEl.textContent = visible ? authInfo.text : '';
+          statusEl.style.display = visible ? '' : 'none';
+          if (visible) {
+            row.addClass?.(authInfo.cls);
+            row.classList?.add(authInfo.cls);
+            statusEl.addClass?.(authInfo.cls);
+            statusEl.classList?.add(authInfo.cls);
+          }
+        };
         label.onclick = () => {
           if (!checkbox.disabled) checkbox.click();
         };
         checkbox.onchange = () => {
           if (checkbox.checked) {
             selectedPlatforms.add(platform.id);
+            setStatusVisible(true);
             if (authInfo.status === 'login_required') {
               new Notice(`${platform.name} 上次状态为需登录。请先在浏览器插件打开平台登录页，或继续尝试由扩展返回实际结果。`, 8000);
             }
@@ -4647,6 +4668,7 @@ class AppleStyleView extends ItemView {
             }
           } else {
             selectedPlatforms.delete(platform.id);
+            setStatusVisible(false);
           }
           updateSyncButtonState();
         };
@@ -6229,11 +6251,12 @@ class AppleStyleSettingTab extends PluginSettingTab {
 
       for (const platform of availablePlatforms) {
         const authBadge = getPlatformAuthBadge(platform);
+        const isSelected = selectedPlatformSet.has(platform.id);
         const chip = platformGrid.createEl('label', {
-          cls: `wechat-platform-chip ${authBadge.cls}${selectedPlatformSet.has(platform.id) ? ' is-selected' : ''}`,
+          cls: `wechat-platform-chip ${isSelected ? `${authBadge.cls} is-selected` : ''}`,
         });
         const checkbox = chip.createEl('input', { attr: { type: 'checkbox' } });
-        checkbox.checked = selectedPlatformSet.has(platform.id);
+        checkbox.checked = isSelected;
         checkbox.value = platform.id;
         const chipBody = chip.createEl('span', { cls: 'wechat-platform-chip-body' });
         chipBody.createEl('span', { text: platform.name, cls: 'wechat-platform-chip-name' });
@@ -6244,20 +6267,39 @@ class AppleStyleSettingTab extends PluginSettingTab {
             cls: 'wechat-platform-chip-capabilities',
           });
         }
-        chipBody.createEl('span', {
-          text: authBadge.text,
-          cls: `wechat-platform-chip-status ${authBadge.cls}`,
+        const statusEl = chipBody.createEl('span', {
+          text: isSelected ? authBadge.text : '',
+          cls: `wechat-platform-chip-status ${isSelected ? authBadge.cls : ''}`,
         });
+        statusEl.style.display = isSelected ? '' : 'none';
+        const setStatusVisible = (visible) => {
+          for (const cls of ['is-ok', 'is-error', 'is-unknown', 'is-bridge']) {
+            chip.removeClass?.(cls);
+            chip.classList?.remove(cls);
+            statusEl.removeClass?.(cls);
+            statusEl.classList?.remove(cls);
+          }
+          statusEl.textContent = visible ? authBadge.text : '';
+          statusEl.style.display = visible ? '' : 'none';
+          if (visible) {
+            chip.addClass?.(authBadge.cls);
+            chip.classList?.add(authBadge.cls);
+            statusEl.addClass?.(authBadge.cls);
+            statusEl.classList?.add(authBadge.cls);
+          }
+        };
         checkbox.onchange = async () => {
           if (checkbox.checked) {
             selectedPlatformSet.add(platform.id);
             chip.addClass('is-selected');
+            setStatusVisible(true);
             if (authBadge.status === 'login_required') {
               new Notice(`${platform.name} 上次状态为需登录。请先在浏览器插件打开平台登录页，或继续尝试由扩展返回实际结果。`, 8000);
             }
           } else {
             selectedPlatformSet.delete(platform.id);
             chip.removeClass('is-selected');
+            setStatusVisible(false);
           }
           updatePlatformSummary();
           await saveSelectedPlatforms();
@@ -6340,28 +6382,33 @@ class AppleStyleSettingTab extends PluginSettingTab {
                 currentBeforeTest.supportedPlatforms,
                 getFallbackWechatsyncPlatforms()
               );
+              const selectedPlatformIds = parseWechatsyncPlatformIds(currentBeforeTest.selectedPlatforms || []);
               let authSnapshot = null;
-              try {
-                authSnapshot = await getAuthSnapshotFromExtension(
-                  bridge,
-                  platformFallbacks.map((platform) => platform.id),
-                  platformFallbacks
-                );
-                capabilities = { ...capabilities, getAuthSnapshot: true };
-                console.debug('[Wechatsync] auth snapshot loaded', {
-                  checkedAt: authSnapshot.checkedAt,
-                  ...summarizeWechatsyncPlatformResponse(authSnapshot.platforms),
-                });
-              } catch (snapshotError) {
-                if (isWechatSyncUnsupportedMethodError(snapshotError)) {
-                  capabilities = { ...capabilities, getAuthSnapshot: false };
+              if (selectedPlatformIds.length > 0) {
+                try {
+                  authSnapshot = await getAuthSnapshotFromExtension(
+                    bridge,
+                    selectedPlatformIds,
+                    platformFallbacks
+                  );
+                  capabilities = { ...capabilities, getAuthSnapshot: true };
+                  console.debug('[Wechatsync] selected auth snapshot loaded', {
+                    checkedAt: authSnapshot.checkedAt,
+                    selectedPlatformIds,
+                    ...summarizeWechatsyncPlatformResponse(authSnapshot.platforms),
+                  });
+                } catch (snapshotError) {
+                  if (isWechatSyncUnsupportedMethodError(snapshotError)) {
+                    capabilities = { ...capabilities, getAuthSnapshot: false };
+                  }
+                  console.warn('[Wechatsync] getAuthSnapshot failed, keeping existing selected auth state', snapshotError);
                 }
-                console.warn('[Wechatsync] getAuthSnapshot failed, keeping existing cached auth state', snapshotError);
               }
               const current = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
               const nextPlatforms = authSnapshot?.platforms?.length
                 ? authSnapshot.platforms
-                : current.connection.platforms;
+                : normalizeWechatsyncPlatformList(current.connection.platforms || [])
+                  .filter((platform) => selectedPlatformIds.includes(platform.id));
               const connectionCheckedAt = authSnapshot?.checkedAt || Date.now();
               this.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
                 ...current,
@@ -6374,8 +6421,8 @@ class AppleStyleSettingTab extends PluginSettingTab {
                   capabilities,
                   message: health
                     ? (authSnapshot?.platforms?.length
-                      ? '桥接已连接，Token 已通过扩展校验，并读取了扩展缓存的登录状态。'
-                      : '桥接已连接，Token 已通过扩展校验。平台登录状态未自动检测。')
+                      ? '桥接已连接，Token 已通过扩展校验，并读取了已选平台的上次状态。'
+                      : '桥接已连接，Token 已通过扩展校验。未检测平台登录状态。')
                     : '桥接已连接。当前扩展版本未提供 health 校验，平台登录状态未自动检测。',
                 },
               });
@@ -6475,7 +6522,7 @@ class AppleStyleSettingTab extends PluginSettingTab {
                   ...current.connection,
                   status: 'connected',
                   checkedAt: Date.now(),
-                  platforms: mergeWechatsyncPlatformLists(current.connection?.platforms || [], usablePlatforms),
+                  platforms: usablePlatforms,
                   message: '已诊断所选平台登录状态。',
                 },
               });

@@ -62,15 +62,17 @@ function normalizeWechatsyncPlatform(platform = {}) {
   const authStatus = ['available', 'login_required', 'unknown', 'bridge_required'].includes(rawStatus)
     ? rawStatus
     : '';
-  const authKnown = platform.authKnown === true
-    || Object.prototype.hasOwnProperty.call(platform, 'isAuthenticated')
-    || Object.prototype.hasOwnProperty.call(platform, 'authenticated')
-    || Object.prototype.hasOwnProperty.call(platform, 'isAuth')
-    || Object.prototype.hasOwnProperty.call(platform, 'loggedIn')
-    || Object.prototype.hasOwnProperty.call(nestedAuth, 'isAuthenticated')
-    || Object.prototype.hasOwnProperty.call(nestedAuth, 'authenticated')
-    || Object.prototype.hasOwnProperty.call(nestedAuth, 'loggedIn')
-    || typeof platform.status === 'string';
+  const hasExplicitAuthKnown = Object.prototype.hasOwnProperty.call(platform, 'authKnown');
+  const authKnown = hasExplicitAuthKnown
+    ? platform.authKnown === true
+    : (Object.prototype.hasOwnProperty.call(platform, 'isAuthenticated')
+      || Object.prototype.hasOwnProperty.call(platform, 'authenticated')
+      || Object.prototype.hasOwnProperty.call(platform, 'isAuth')
+      || Object.prototype.hasOwnProperty.call(platform, 'loggedIn')
+      || Object.prototype.hasOwnProperty.call(nestedAuth, 'isAuthenticated')
+      || Object.prototype.hasOwnProperty.call(nestedAuth, 'authenticated')
+      || Object.prototype.hasOwnProperty.call(nestedAuth, 'loggedIn')
+      || typeof platform.status === 'string');
   return {
     id,
     name: String(platform.name || platform.title || platform.platformName || id),
