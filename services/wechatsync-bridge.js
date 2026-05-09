@@ -285,42 +285,42 @@ function getWebSocketOpenState(WebSocketServer) {
 function createReadableBridgeError(error) {
   const message = String(error?.message || error || '');
   if (/Invalid or missing token|MCP token not configured|401|403/i.test(message)) {
-    const friendly = new Error('Wechatsync 扩展已响应，但鉴权失败。请在 Wechatsync 扩展中开启 MCP/桥接，并确认 Obsidian 与扩展使用同一个 Token。');
+    const friendly = new Error('浏览器扩展已响应，但鉴权失败。请在浏览器扩展中开启本地桥接连接，并确认 Obsidian 与扩展使用同一个连接 Token。');
     friendly.code = 'AUTH_FAILED';
     friendly.cause = error;
     return friendly;
   }
   if (/Extension not connected|not connected|timeout:no_extension/i.test(message)) {
-    const friendly = new Error('尚未连接到 Wechatsync 浏览器扩展。请在已登录目标平台的 Chromium 浏览器中安装并启用 Wechatsync 扩展，然后开启 MCP/桥接。');
+    const friendly = new Error('尚未连接到浏览器扩展。请在已登录目标平台的 Chromium 浏览器中安装并启用扩展，然后开启本地桥接连接。');
     friendly.code = 'EXTENSION_NOT_CONNECTED';
     friendly.cause = error;
     return friendly;
   }
   if (/Request timeout: listPlatforms/i.test(message)) {
-    const friendly = new Error('Wechatsync 扩展已连接，但读取平台列表超时。平台较多或部分平台检查较慢时可能发生，请稍后重试。');
+    const friendly = new Error('浏览器扩展已连接，但读取平台列表超时。平台较多或部分平台检查较慢时可能发生，请稍后重试。');
     friendly.code = 'PLATFORM_LIST_TIMEOUT';
     friendly.cause = error;
     return friendly;
   }
   if (/Request timeout: syncArticle/i.test(message)) {
-    const friendly = new Error('Wechatsync 扩展长时间没有返回同步结果。浏览器扩展可能仍在后台处理，请先到扩展历史或目标平台草稿箱确认结果；如果某个平台卡住，建议减少平台后重试。');
+    const friendly = new Error('浏览器扩展长时间没有返回同步结果。扩展可能仍在后台处理，请先到扩展历史或目标平台草稿箱确认结果；如果某个平台卡住，建议减少平台后重试。');
     friendly.code = 'SYNC_TIMEOUT';
     friendly.cause = error;
     return friendly;
   }
   if (/Request timeout: (health|listSupportedPlatforms|enqueueSyncArticle|getSyncTask|getSyncTaskLink|openSyncTask|getAuthSnapshot)/i.test(message)) {
-    const friendly = new Error('Wechatsync 扩展响应超时，请确认扩展已开启 MCP/桥接后重试。');
+    const friendly = new Error('浏览器扩展响应超时，请确认扩展已开启本地桥接连接后重试。');
     friendly.code = 'BRIDGE_REQUEST_TIMEOUT';
     friendly.cause = error;
     return friendly;
   }
   if (/EADDRINUSE|Primary|ECONNREFUSED|not reachable/i.test(message)) {
-    const friendly = new Error('无法连接 Wechatsync 本地桥接服务。请确认没有其他同步进程占用端口，或稍后重试。');
+    const friendly = new Error('无法连接本地桥接服务。请确认没有其他同步进程占用端口，或稍后重试。');
     friendly.code = 'BRIDGE_UNAVAILABLE';
     friendly.cause = error;
     return friendly;
   }
-  return error instanceof Error ? error : new Error(message || 'Wechatsync 桥接请求失败。');
+  return error instanceof Error ? error : new Error(message || '浏览器扩展桥接请求失败。');
 }
 
 function readRequestBody(req) {

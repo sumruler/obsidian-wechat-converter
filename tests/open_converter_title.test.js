@@ -36,7 +36,7 @@ describe('AppleStylePlugin - openConverter title refresh', () => {
       type: 'apple-style-converter',
       state: {},
       icon: 'wand',
-      title: '微信公众号转换器',
+      title: 'Obsidian 发布助手',
       active: true,
     });
     expect(revealLeaf).toHaveBeenCalledWith(staleLeaf);
@@ -51,7 +51,7 @@ describe('AppleStylePlugin - openConverter title refresh', () => {
         type: 'apple-style-converter',
         state: { keep: true },
         icon: 'wand',
-        title: '微信公众号转换器',
+        title: 'Obsidian 发布助手',
       })),
       setViewState,
     };
@@ -87,7 +87,7 @@ describe('AppleStylePlugin - openConverter title refresh', () => {
         type: 'apple-style-converter',
         state: { from: 'restore' },
         icon: 'wand',
-        title: '微信公众号转换器',
+        title: 'Obsidian 发布助手',
       })),
       setViewState: freshLeafSetViewState,
     };
@@ -105,7 +105,7 @@ describe('AppleStylePlugin - openConverter title refresh', () => {
       type: 'apple-style-converter',
       state: { from: 'restore' },
       icon: 'wand',
-      title: '微信公众号转换器',
+      title: 'Obsidian 发布助手',
       active: false,
     });
     expect(freshLeafSetViewState).not.toHaveBeenCalled();
