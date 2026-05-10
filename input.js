@@ -6148,7 +6148,7 @@ class AppleStyleSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('启用浏览器插件发布')
-      .setDesc('开启后，请在浏览器插件中开启本地服务连接，并保持目标平台在浏览器里处于可发布状态。')
+      .setDesc('开启后，确保目标平台在浏览器中已登录，即可发布。')
       .addToggle(toggle => toggle
         .setValue(multiPlatformSettings.enabled)
         .onChange(async (value) => {

@@ -17797,7 +17797,7 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
     const multiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
     this.plugin.settings.multiPlatformSync = multiPlatformSettings;
     new Setting(containerEl).setName("\u6D4F\u89C8\u5668\u63D2\u4EF6\u53D1\u5E03").setDesc("Obsidian \u8D1F\u8D23\u5199\u4F5C\u3001\u9884\u89C8\u548C\u5E73\u53F0\u9009\u62E9\uFF1B\u6D4F\u89C8\u5668\u63D2\u4EF6\u4F7F\u7528\u5F53\u524D\u7684\u6D4F\u89C8\u5668\u767B\u5F55\u6001\uFF0C\u628A\u6587\u7AE0\u4FDD\u5B58\u5230\u77E5\u4E4E\u3001\u6398\u91D1\u3001CSDN \u7B49\u5E73\u53F0\u8349\u7A3F\u7BB1\u3002\u5FAE\u4FE1\u4ECD\u53EF\u4F7F\u7528\u4E0A\u65B9\u516C\u4F17\u53F7 API\u3002").setHeading();
-    new Setting(containerEl).setName("\u542F\u7528\u6D4F\u89C8\u5668\u63D2\u4EF6\u53D1\u5E03").setDesc("\u5F00\u542F\u540E\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u4E2D\u5F00\u542F\u672C\u5730\u670D\u52A1\u8FDE\u63A5\uFF0C\u5E76\u4FDD\u6301\u76EE\u6807\u5E73\u53F0\u5728\u6D4F\u89C8\u5668\u91CC\u5904\u4E8E\u53EF\u53D1\u5E03\u72B6\u6001\u3002").addToggle((toggle) => toggle.setValue(multiPlatformSettings.enabled).onChange(async (value) => {
+    new Setting(containerEl).setName("\u542F\u7528\u6D4F\u89C8\u5668\u63D2\u4EF6\u53D1\u5E03").setDesc("\u5F00\u542F\u540E\uFF0C\u786E\u4FDD\u76EE\u6807\u5E73\u53F0\u5728\u6D4F\u89C8\u5668\u4E2D\u5DF2\u767B\u5F55\uFF0C\u5373\u53EF\u53D1\u5E03\u3002").addToggle((toggle) => toggle.setValue(multiPlatformSettings.enabled).onChange(async (value) => {
       var _a2;
       this.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
         ...this.plugin.settings.multiPlatformSync,
