@@ -6627,7 +6627,7 @@ class AppleStyleSettingTab extends PluginSettingTab {
 
     }
     }
-
+  }
 
   renderAiSettingsSection(containerEl) {
     new Setting(containerEl)

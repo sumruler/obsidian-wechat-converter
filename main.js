@@ -17668,12 +17668,6 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new Setting(containerEl).setDesc("\u5728 Obsidian \u4E2D\u5B8C\u6210\u5199\u4F5C\u4E0E\u9884\u89C8\uFF1B\u5FAE\u4FE1\u8D26\u53F7\u3001\u6D4F\u89C8\u5668\u63D2\u4EF6\u53D1\u5E03\u548C\u9ED8\u8BA4\u53D1\u5E03\u9009\u9879\u5728\u8FD9\u91CC\u914D\u7F6E\u3002\u66F4\u591A\u6392\u7248\u6837\u5F0F\u8BF7\u5728\u4FA7\u8FB9\u680F\u9762\u677F\u4E2D\u8C03\u6574\u3002");
-    new Setting(containerEl).setName("\u9884\u89C8\u6A21\u5F0F").setHeading();
-    new Setting(containerEl).setName("\u4F7F\u7528\u624B\u673A\u4EFF\u771F\u6846").setDesc("\u5F00\u542F\u540E\uFF0C\u9884\u89C8\u533A\u57DF\u5C06\u663E\u793A\u4E3A iPhone X \u624B\u673A\u6846\u6837\u5F0F\uFF1B\u5173\u95ED\u5219\u6062\u590D\u4E3A\u7ECF\u5178\u5168\u5BBD\u9884\u89C8\u6A21\u5F0F\uFF08\u9700\u91CD\u542F\u63D2\u4EF6\u9762\u677F\u751F\u6548\uFF09").addToggle((toggle) => toggle.setValue(this.plugin.settings.usePhoneFrame).onChange(async (value) => {
-      this.plugin.settings.usePhoneFrame = value;
-      await this.plugin.saveSettings();
-      new Notice("\u8BBE\u7F6E\u5DF2\u4FDD\u5B58\uFF0C\u8BF7\u5173\u95ED\u5E76\u91CD\u65B0\u6253\u5F00\u53D1\u5E03\u52A9\u624B\u9762\u677F\u4EE5\u751F\u6548");
-    }));
     const tabBar = containerEl.createDiv({ cls: "apple-settings-tabs" });
     const wechatTab = tabBar.createDiv({ cls: "apple-settings-tab active", text: "\u5FAE\u4FE1" });
     const multiTab = tabBar.createDiv({ cls: "apple-settings-tab", text: "\u5176\u4ED6\u5E73\u53F0" });
@@ -17694,6 +17688,12 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
     };
     {
       const containerEl2 = wechatContent;
+      new Setting(containerEl2).setName("\u9884\u89C8\u6A21\u5F0F").setHeading();
+      new Setting(containerEl2).setName("\u4F7F\u7528\u624B\u673A\u4EFF\u771F\u6846").setDesc("\u5F00\u542F\u540E\uFF0C\u9884\u89C8\u533A\u57DF\u5C06\u663E\u793A\u4E3A iPhone X \u624B\u673A\u6846\u6837\u5F0F\uFF1B\u5173\u95ED\u5219\u6062\u590D\u4E3A\u7ECF\u5178\u5168\u5BBD\u9884\u89C8\u6A21\u5F0F\uFF08\u9700\u91CD\u542F\u63D2\u4EF6\u9762\u677F\u751F\u6548\uFF09").addToggle((toggle) => toggle.setValue(this.plugin.settings.usePhoneFrame).onChange(async (value) => {
+        this.plugin.settings.usePhoneFrame = value;
+        await this.plugin.saveSettings();
+        new Notice("\u8BBE\u7F6E\u5DF2\u4FDD\u5B58\uFF0C\u8BF7\u5173\u95ED\u5E76\u91CD\u65B0\u6253\u5F00\u53D1\u5E03\u52A9\u624B\u9762\u677F\u4EE5\u751F\u6548");
+      }));
       new Setting(containerEl2).setName("\u56FE\u7247\u6C34\u5370").setHeading();
       new Setting(containerEl2).setName("\u542F\u7528\u56FE\u7247\u6C34\u5370").setDesc("\u5728\u6BCF\u5F20\u56FE\u7247\u4E0A\u65B9\u663E\u793A\u5934\u50CF\uFF08\u9700\u91CD\u542F\u63D2\u4EF6\u9762\u677F\u751F\u6548\uFF09").addToggle((toggle) => toggle.setValue(this.plugin.settings.enableWatermark).onChange(async (value) => {
         this.plugin.settings.enableWatermark = value;
@@ -17820,15 +17820,15 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
         this.plugin.settings.cleanupAfterSync = value;
         await this.plugin.saveSettings();
       }));
-      let hasWarnedAbsoluteCleanupPath2 = false;
+      let hasWarnedAbsoluteCleanupPath = false;
       new Setting(containerEl2).setName("\u6E05\u7406\u76EE\u5F55").setDesc("\u586B\u5199 vault \u5185\u76F8\u5BF9\u8DEF\u5F84\uFF08\u4E0D\u8981\u586B /Users/... \u8FD9\u7C7B\u7EDD\u5BF9\u8DEF\u5F84\uFF09\uFF0C\u652F\u6301 {{note}} \u5360\u4F4D\u7B26\uFF0C\u4F8B\u5982 published/{{note}}_img\u3002").addText((text) => text.setPlaceholder("published/{{note}}_img").setValue(this.plugin.settings.cleanupDirTemplate || "").onChange(async (value) => {
         if (this.isAbsolutePathLike(value)) {
-          if (!hasWarnedAbsoluteCleanupPath2) {
+          if (!hasWarnedAbsoluteCleanupPath) {
             new Notice("\u26A0\uFE0F \u6E05\u7406\u76EE\u5F55\u8BF7\u586B\u5199 vault \u5185\u76F8\u5BF9\u8DEF\u5F84\uFF0C\u4E0D\u8981\u4F7F\u7528\u7EDD\u5BF9\u8DEF\u5F84\uFF08\u5982 /Users/... \u6216 C:...\uFF09");
-            hasWarnedAbsoluteCleanupPath2 = true;
+            hasWarnedAbsoluteCleanupPath = true;
           }
         } else {
-          hasWarnedAbsoluteCleanupPath2 = false;
+          hasWarnedAbsoluteCleanupPath = false;
         }
         const normalized = this.normalizeVaultPath(value);
         this.plugin.settings.cleanupDirTemplate = normalized;
@@ -18208,62 +18208,6 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
         }));
       }
     }
-    this.renderAiSettingsSection(containerEl);
-    new Setting(containerEl).setName("\u9AD8\u7EA7\u8BBE\u7F6E").setHeading();
-    new Setting(containerEl).setName("\u53D1\u9001\u6210\u529F\u540E\u81EA\u52A8\u6E05\u7406\u8D44\u6E90").setDesc("\u9ED8\u8BA4\u5173\u95ED\u3002\u5F00\u542F\u540E\u4F1A\u5728\u521B\u5EFA\u8349\u7A3F\u6210\u529F\u540E\uFF0C\u5220\u9664\u4F60\u5728\u4E0B\u65B9\u914D\u7F6E\u7684\u76EE\u5F55\u3002").addToggle((toggle) => toggle.setValue(this.plugin.settings.cleanupAfterSync).onChange(async (value) => {
-      this.plugin.settings.cleanupAfterSync = value;
-      await this.plugin.saveSettings();
-    }));
-    let hasWarnedAbsoluteCleanupPath = false;
-    new Setting(containerEl).setName("\u6E05\u7406\u76EE\u5F55").setDesc("\u586B\u5199 vault \u5185\u76F8\u5BF9\u8DEF\u5F84\uFF08\u4E0D\u8981\u586B /Users/... \u8FD9\u7C7B\u7EDD\u5BF9\u8DEF\u5F84\uFF09\uFF0C\u652F\u6301 {{note}} \u5360\u4F4D\u7B26\uFF0C\u4F8B\u5982 published/{{note}}_img\u3002").addText((text) => text.setPlaceholder("published/{{note}}_img").setValue(this.plugin.settings.cleanupDirTemplate || "").onChange(async (value) => {
-      if (this.isAbsolutePathLike(value)) {
-        if (!hasWarnedAbsoluteCleanupPath) {
-          new Notice("\u26A0\uFE0F \u6E05\u7406\u76EE\u5F55\u8BF7\u586B\u5199 vault \u5185\u76F8\u5BF9\u8DEF\u5F84\uFF0C\u4E0D\u8981\u4F7F\u7528\u7EDD\u5BF9\u8DEF\u5F84\uFF08\u5982 /Users/... \u6216 C:\\...\uFF09");
-          hasWarnedAbsoluteCleanupPath = true;
-        }
-      } else {
-        hasWarnedAbsoluteCleanupPath = false;
-      }
-      const normalized = this.normalizeVaultPath(value);
-      if (normalized.includes("..")) {
-        new Notice("\u274C \u6E05\u7406\u76EE\u5F55\u4E0D\u80FD\u5305\u542B ..");
-        return;
-      }
-      this.plugin.settings.cleanupDirTemplate = normalized;
-      await this.plugin.saveSettings();
-    }));
-    new Setting(containerEl).setName("\u4F7F\u7528\u7CFB\u7EDF\u56DE\u6536\u7AD9").setDesc("\u5F00\u542F\u65F6\u4F18\u5148\u79FB\u52A8\u5230\u7CFB\u7EDF\u56DE\u6536\u7AD9\uFF1B\u5173\u95ED\u65F6\u76F4\u63A5\u4ECE vault \u5220\u9664\u3002").addToggle((toggle) => toggle.setValue(this.plugin.settings.cleanupUseSystemTrash !== false).onChange(async (value) => {
-      this.plugin.settings.cleanupUseSystemTrash = value;
-      await this.plugin.saveSettings();
-    }));
-    let hasWarnedInsecureProxy = false;
-    new Setting(containerEl).setName("API \u4EE3\u7406\u5730\u5740").setDesc(createFragment((frag) => {
-      const descDiv = frag.createDiv();
-      descDiv.appendText("\u5982\u679C\u4F60\u7684\u7F51\u7EDC IP \u7ECF\u5E38\u53D8\u5316\uFF0C\u53EF\u914D\u7F6E\u4EE3\u7406\u670D\u52A1\u3002");
-      descDiv.createEl("a", {
-        text: "\u67E5\u770B\u90E8\u7F72\u6307\u5357",
-        href: "https://xiaoweibox.top/chats/wechat-proxy",
-        style: "margin-left: 5px;"
-      });
-      frag.createDiv({
-        cls: "wechat-proxy-note",
-        style: "margin-top: 6px; font-size: 12px; color: var(--text-muted); background: var(--background-secondary); padding: 8px; border-radius: 4px;"
-      }, (el) => {
-        el.createSpan({ text: "\u{1F512} \u5B89\u5168\u63D0\u793A\uFF1A\u4EE3\u7406\u670D\u52A1\u5C06\u4E2D\u8F6C\u60A8\u7684\u8BF7\u6C42\u3002\u8BF7\u786E\u4FDD\u4F7F\u7528\u53D7\u4FE1\u4EFB\u7684\u4EE3\u7406\uFF08\u81EA\u5EFA\u6216\u53EF\u9760\u7B2C\u4E09\u65B9\uFF09\uFF0C\u4EE5\u4FDD\u62A4 AppSecret \u5B89\u5168\u3002" });
-      });
-    })).addText((text) => text.setPlaceholder("https://your-proxy.workers.dev").setValue(this.plugin.settings.proxyUrl).onChange(async (value) => {
-      const trimmedValue = value.trim();
-      if (trimmedValue && !trimmedValue.startsWith("https://")) {
-        if (!hasWarnedInsecureProxy) {
-          new Notice("\u26A0\uFE0F \u5B89\u5168\u98CE\u9669\uFF1A\u4EE3\u7406\u5730\u5740\u5FC5\u987B\u4F7F\u7528 HTTPS \u4EE5\u4FDD\u62A4\u60A8\u7684 AppSecret\u3002");
-          hasWarnedInsecureProxy = true;
-        }
-      } else {
-        hasWarnedInsecureProxy = false;
-      }
-      this.plugin.settings.proxyUrl = trimmedValue;
-      await this.plugin.saveSettings();
-    }));
   }
   renderAiSettingsSection(containerEl) {
     new Setting(containerEl).setName("AI \u7F16\u6392").setDesc("\u7BA1\u7406\u6A21\u578B\u3001\u9ED8\u8BA4\u5E03\u5C40\u3001\u9ED8\u8BA4\u989C\u8272\u548C\u7F13\u5B58\u7B56\u7565\u3002\u5B9E\u9645\u751F\u6210\u4E0E\u5E94\u7528\u5165\u53E3\u5728\u8F6C\u6362\u5668\u9876\u90E8\u5DE5\u5177\u680F\u7684\u300CAI \u7F16\u6392\u300D\u6309\u94AE\u4E2D\u3002").setHeading();
