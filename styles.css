@@ -2402,14 +2402,13 @@ input[type="range"].apple-slider:active::-webkit-slider-thumb {
 .wechat-platform-chip-body {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
   line-height: 1.2;
 }
 
 .wechat-platform-chip-name {
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
   white-space: nowrap;
   font-size: 12px;
   font-weight: 600;
