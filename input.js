@@ -4612,8 +4612,9 @@ class AppleStyleView extends ItemView {
         const authInfo = getWechatsyncPlatformStatusBadge(platform, { bridgeConnected: isBridgeReady });
         const isSelected = isBridgeReady && defaultSelectedPlatforms.has(platform.id);
         const row = platformListEl.createDiv({
-          cls: `wechat-multiplatform-platform ${isSelected ? authInfo.cls : ''}`,
+          cls: `wechat-multiplatform-platform ${isSelected ? `${authInfo.cls} is-selected` : ''}`,
         });
+        row.setAttribute('title', isSelected ? `${platform.name} · ${authInfo.text}` : platform.name);
         const checkbox = row.createEl('input');
         checkbox.type = 'checkbox';
         checkbox.value = platform.id;
@@ -4622,11 +4623,11 @@ class AppleStyleView extends ItemView {
         if (isSelected) selectedPlatforms.add(platform.id);
         const label = row.createEl('label', { cls: 'wechat-multiplatform-platform-label' });
         label.createEl('span', { text: platform.name, cls: 'wechat-multiplatform-platform-name' });
-        const statusEl = row.createEl('span', {
-          text: isSelected ? authInfo.text : '',
-          cls: `wechat-multiplatform-platform-status ${isSelected ? authInfo.cls : ''}`,
+        const statusEl = label.createEl('span', {
+          text: authInfo.text,
+          cls: `wechat-multiplatform-platform-status ${authInfo.cls}`,
         });
-        statusEl.style.display = isSelected ? '' : 'none';
+        statusEl.setAttribute('title', authInfo.text);
         const setStatusVisible = (visible) => {
           for (const cls of ['is-ok', 'is-error', 'is-unknown', 'is-bridge']) {
             row.removeClass?.(cls);
@@ -4634,14 +4635,14 @@ class AppleStyleView extends ItemView {
             statusEl.removeClass?.(cls);
             statusEl.classList?.remove(cls);
           }
-          statusEl.textContent = visible ? authInfo.text : '';
-          statusEl.style.display = visible ? '' : 'none';
+          statusEl.textContent = authInfo.text;
           if (visible) {
             row.addClass?.(authInfo.cls);
             row.classList?.add(authInfo.cls);
             statusEl.addClass?.(authInfo.cls);
             statusEl.classList?.add(authInfo.cls);
           }
+          row.setAttribute('title', visible ? `${platform.name} · ${authInfo.text}` : platform.name);
         };
         label.onclick = () => {
           if (!checkbox.disabled) checkbox.click();
@@ -4649,6 +4650,8 @@ class AppleStyleView extends ItemView {
         checkbox.onchange = () => {
           if (checkbox.checked) {
             selectedPlatforms.add(platform.id);
+            row.addClass?.('is-selected');
+            row.classList?.add('is-selected');
             setStatusVisible(true);
             if (authInfo.status === 'login_required') {
               new Notice(`${platform.name} 上次状态为需登录。请先在浏览器插件打开平台登录页，或继续尝试由插件返回实际结果。`, 8000);
@@ -4658,6 +4661,8 @@ class AppleStyleView extends ItemView {
             }
           } else {
             selectedPlatforms.delete(platform.id);
+            row.removeClass?.('is-selected');
+            row.classList?.remove('is-selected');
             setStatusVisible(false);
           }
           updateSyncButtonState();
@@ -6335,16 +6340,17 @@ class AppleStyleSettingTab extends PluginSettingTab {
         const chip = platformGrid.createEl('label', {
           cls: `wechat-platform-chip ${isSelected ? `${authBadge.cls} is-selected` : ''}`,
         });
+        chip.setAttribute('title', isSelected ? `${platform.name} · ${authBadge.text}` : platform.name);
         const checkbox = chip.createEl('input', { attr: { type: 'checkbox' } });
         checkbox.checked = isSelected;
         checkbox.value = platform.id;
         const chipBody = chip.createEl('span', { cls: 'wechat-platform-chip-body' });
         chipBody.createEl('span', { text: platform.name, cls: 'wechat-platform-chip-name' });
-        const statusEl = chip.createEl('span', {
-          text: isSelected ? authBadge.text : '',
-          cls: `wechat-platform-chip-status ${isSelected ? authBadge.cls : ''}`,
+        const statusEl = chipBody.createEl('span', {
+          text: authBadge.text,
+          cls: `wechat-platform-chip-status ${authBadge.cls}`,
         });
-        statusEl.style.display = isSelected ? '' : 'none';
+        statusEl.setAttribute('title', authBadge.text);
         const setStatusVisible = (visible) => {
           for (const cls of ['is-ok', 'is-error', 'is-unknown', 'is-bridge']) {
             chip.removeClass?.(cls);
@@ -6352,14 +6358,14 @@ class AppleStyleSettingTab extends PluginSettingTab {
             statusEl.removeClass?.(cls);
             statusEl.classList?.remove(cls);
           }
-          statusEl.textContent = visible ? authBadge.text : '';
-          statusEl.style.display = visible ? '' : 'none';
+          statusEl.textContent = authBadge.text;
           if (visible) {
             chip.addClass?.(authBadge.cls);
             chip.classList?.add(authBadge.cls);
             statusEl.addClass?.(authBadge.cls);
             statusEl.classList?.add(authBadge.cls);
           }
+          chip.setAttribute('title', visible ? `${platform.name} · ${authBadge.text}` : platform.name);
         };
         checkbox.onchange = async () => {
           if (checkbox.checked) {
