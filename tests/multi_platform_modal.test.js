@@ -190,7 +190,7 @@ describe('AppleStyleView - showMultiPlatformSyncModal platform rows', () => {
 
     const hint = modal.contentEl.querySelector('.wechat-multiplatform-quota-hint');
     expect(hint).not.toBeNull();
-    expect(hint.textContent).toContain('免费版每天 1 次');
+    expect(hint.textContent).toContain('免费版每天 3 个平台额度');
     const upgradeBtn = hint.querySelector('button');
     expect(upgradeBtn.textContent).toBe('升级 Pro');
 
@@ -203,11 +203,10 @@ describe('AppleStyleView - showMultiPlatformSyncModal platform rows', () => {
       health: vi.fn().mockResolvedValue({ ok: true, capabilities: { quotaPolicy: true } }),
       enqueueSyncArticle: vi.fn().mockResolvedValue({
         accepted: false,
-        reason: 'platform_limit',
+        reason: 'daily_limit',
         quotaBlocked: true,
-        maxPlatforms: 3,
         skippedPlatforms: ['zhihu', 'juejin'],
-        message: '免费版每次最多 3 个平台。',
+        message: '免费版今日平台额度不足，明天 0:00 重置，或升级 Pro。',
       }),
     };
     const view = makeView({ selectedPlatforms: ['zhihu', 'juejin'], bridge });
@@ -226,7 +225,7 @@ describe('AppleStyleView - showMultiPlatformSyncModal platform rows', () => {
       requestedPlatformIds: ['zhihu', 'juejin'],
       quotaResult: expect.objectContaining({
         accepted: false,
-        reason: 'platform_limit',
+        reason: 'daily_limit',
       }),
     }));
   });
@@ -251,7 +250,7 @@ describe('AppleStyleView - showMultiPlatformSyncModal platform rows', () => {
     const modal = modalCapture.getLastModal();
     expect(modal.titleEl.textContent).toBe('已发送到浏览器插件');
     expect(modal.contentEl.textContent).toContain('已按免费版额度投递');
-    expect(modal.contentEl.textContent).toContain('跳过 1 个超额平台');
+    expect(modal.contentEl.textContent).toContain('跳过 1 个超出今日额度的平台');
     expect(modal.contentEl.textContent).toContain('掘金');
 
     const upgradeBtn = Array.from(modal.contentEl.querySelectorAll('button'))
@@ -271,7 +270,7 @@ describe('AppleStyleView - showMultiPlatformSyncModal platform rows', () => {
       task: {
         platforms: [
           { id: 'zhihu', status: 'queued' },
-          { id: 'juejin', status: 'queued', message: '免费版每次最多 1 个平台' },
+          { id: 'juejin', status: 'queued', message: '免费版今日平台额度不足' },
         ],
       },
       quotaResult: {
@@ -293,5 +292,29 @@ describe('AppleStyleView - showMultiPlatformSyncModal platform rows', () => {
     expect(zhihuRows[0].querySelector('.wechat-multiplatform-result-pill')?.textContent).toBe('已投递');
     expect(juejinRows).toHaveLength(1);
     expect(juejinRows[0].querySelector('.wechat-multiplatform-result-pill')?.textContent).toBe('已跳过');
+  });
+
+  it('uses daily platform quota copy for legacy platform_limit blocks', () => {
+    const view = makeView({ selectedPlatforms: ['zhihu', 'juejin'] });
+    view.showMultiPlatformQuotaBlockedModal = AppleStyleView.prototype.showMultiPlatformQuotaBlockedModal.bind(view);
+
+    view.showMultiPlatformQuotaBlockedModal({
+      requestedPlatformIds: ['zhihu', 'juejin'],
+      quotaResult: {
+        accepted: false,
+        quotaBlocked: true,
+        reason: 'platform_limit',
+        maxPlatforms: 3,
+        skippedPlatforms: ['zhihu', 'juejin'],
+        message: '免费版每次最多 3 个平台。',
+      },
+    });
+
+    const modal = modalCapture.getLastModal();
+    expect(modal.titleEl.textContent).toBe('发布受限');
+    expect(modal.contentEl.textContent).toContain('免费版平台额度不足');
+    expect(modal.contentEl.textContent).toContain('免费版今日平台额度不足');
+    expect(modal.contentEl.textContent).not.toContain('每次最多');
+    expect(modal.contentEl.textContent).not.toContain('单次最多');
   });
 });

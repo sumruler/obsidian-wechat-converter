@@ -4161,7 +4161,7 @@ class AppleStyleView extends ItemView {
       const syncIdText = taskId ? `（任务 ${taskId}）` : '';
       const fallbackText = usedFallbackSend ? '当前插件未提供任务 ID，' : '';
       const quotaText = skippedPlatformIds.length
-        ? `已跳过 ${skippedPlatformIds.length} 个超额平台。`
+        ? `已跳过 ${skippedPlatformIds.length} 个超出今日额度的平台。`
         : '';
       new Notice(`✅ 已发送到浏览器插件${syncIdText}。${fallbackText}${quotaText}请在浏览器插件的历史或目标平台草稿箱查看结果。`, 10000);
       return;
@@ -4195,7 +4195,7 @@ class AppleStyleView extends ItemView {
     });
     summary.createEl('p', {
       text: skippedPlatformIds.length
-        ? `已发布到：${formatPlatformNames(publishedPlatformIds)}。跳过 ${skippedPlatformIds.length} 个超额平台：${formatPlatformNames(skippedPlatformIds)}。升级 Pro 可发布到全部平台。`
+        ? `已发布到：${formatPlatformNames(publishedPlatformIds)}。跳过 ${skippedPlatformIds.length} 个超出今日额度的平台：${formatPlatformNames(skippedPlatformIds)}。升级 Pro 可发布到全部平台。`
         : (taskId
           ? 'Obsidian 已完成投递，不会长时间等待所有平台完成。后续草稿链接、失败原因和重试请在浏览器插件任务窗口里查看。'
           : '当前插件版本没有返回任务 ID。文章已发送，请在浏览器插件历史记录中查看最近任务。'),
@@ -4265,7 +4265,7 @@ class AppleStyleView extends ItemView {
       const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
       body.createEl('div', { text: platformName, cls: 'wechat-multiplatform-result-name' });
       body.createEl('div', {
-        text: `免费版单次最多 ${quotaResult?.maxPlatforms || 3} 个平台，当前平台未入队。`,
+        text: '免费版每天 3 个平台额度，当前平台未入队。',
         cls: 'wechat-multiplatform-result-detail',
       });
     }
@@ -4301,11 +4301,12 @@ class AppleStyleView extends ItemView {
         .filter(Boolean);
       return names.length ? names.join('、') : '无';
     };
-    const maxPlatforms = quotaResult?.maxPlatforms || 3;
     const reason = quotaResult?.reason || '';
-    const summaryText = quotaResult?.message || (reason === 'daily_limit'
-      ? '免费版每天最多发布 1 次。今天的免费发布次数已用完，明天可以继续，或升级 Pro。'
-      : `免费版每次最多 ${maxPlatforms} 个平台。你选择了 ${requestedPlatformIds.length} 个，请减少平台后重试，或升级 Pro。`);
+    const rawMessage = typeof quotaResult?.message === 'string' ? quotaResult.message.trim() : '';
+    const legacyQuotaMessage = /单次最多|每次最多|每天最多发布\s*1\s*次|每天最多\s*1\s*次/.test(rawMessage);
+    const summaryText = rawMessage && !legacyQuotaMessage
+      ? rawMessage
+      : '免费版今日平台额度不足，明天 0:00 重置，或升级 Pro。';
 
     if (typeof Modal !== 'function') {
       new Notice(summaryText, 10000);
@@ -4324,7 +4325,7 @@ class AppleStyleView extends ItemView {
     const summary = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-result-summary is-warning' });
     summary.createEl('div', {
       cls: 'wechat-multiplatform-result-summary-title',
-      text: reason === 'daily_limit' ? '今日免费次数已用完' : '超出免费版平台数量',
+      text: reason === 'daily_limit' ? '今日平台额度不足' : '免费版平台额度不足',
     });
     summary.createEl('p', { text: summaryText });
 

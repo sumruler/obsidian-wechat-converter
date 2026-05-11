@@ -107,7 +107,7 @@ async function showMultiPlatformPublishModal(view, options = {}) {
   });
   const quotaHint = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-quota-hint' });
   quotaHint.createEl('span', {
-    text: '免费版每天 1 次，单次最多 3 个平台。',
+    text: '免费版每天 3 个平台额度。',
   });
   const quotaUpgradeBtn = quotaHint.createEl('button', {
     text: '升级 Pro',

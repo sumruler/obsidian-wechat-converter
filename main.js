@@ -13195,7 +13195,7 @@ var require_multi_platform = __commonJS({
       });
       const quotaHint = modal.contentEl.createDiv({ cls: "wechat-multiplatform-quota-hint" });
       quotaHint.createEl("span", {
-        text: "\u514D\u8D39\u7248\u6BCF\u5929 1 \u6B21\uFF0C\u5355\u6B21\u6700\u591A 3 \u4E2A\u5E73\u53F0\u3002"
+        text: "\u514D\u8D39\u7248\u6BCF\u5929 3 \u4E2A\u5E73\u53F0\u989D\u5EA6\u3002"
       });
       const quotaUpgradeBtn = quotaHint.createEl("button", {
         text: "\u5347\u7EA7 Pro",
@@ -17158,7 +17158,7 @@ var AppleStyleView = class extends ItemView {
     if (typeof Modal !== "function") {
       const syncIdText = taskId ? `\uFF08\u4EFB\u52A1 ${taskId}\uFF09` : "";
       const fallbackText = usedFallbackSend ? "\u5F53\u524D\u63D2\u4EF6\u672A\u63D0\u4F9B\u4EFB\u52A1 ID\uFF0C" : "";
-      const quotaText = skippedPlatformIds.length ? `\u5DF2\u8DF3\u8FC7 ${skippedPlatformIds.length} \u4E2A\u8D85\u989D\u5E73\u53F0\u3002` : "";
+      const quotaText = skippedPlatformIds.length ? `\u5DF2\u8DF3\u8FC7 ${skippedPlatformIds.length} \u4E2A\u8D85\u51FA\u4ECA\u65E5\u989D\u5EA6\u7684\u5E73\u53F0\u3002` : "";
       new Notice(`\u2705 \u5DF2\u53D1\u9001\u5230\u6D4F\u89C8\u5668\u63D2\u4EF6${syncIdText}\u3002${fallbackText}${quotaText}\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u7684\u5386\u53F2\u6216\u76EE\u6807\u5E73\u53F0\u8349\u7A3F\u7BB1\u67E5\u770B\u7ED3\u679C\u3002`, 1e4);
       return;
     }
@@ -17188,7 +17188,7 @@ var AppleStyleView = class extends ItemView {
       text: skippedPlatformIds.length ? "\u5DF2\u6309\u514D\u8D39\u7248\u989D\u5EA6\u6295\u9012" : "\u4EFB\u52A1\u5DF2\u4EA4\u7ED9\u6D4F\u89C8\u5668\u63D2\u4EF6"
     });
     summary.createEl("p", {
-      text: skippedPlatformIds.length ? `\u5DF2\u53D1\u5E03\u5230\uFF1A${formatPlatformNames(publishedPlatformIds)}\u3002\u8DF3\u8FC7 ${skippedPlatformIds.length} \u4E2A\u8D85\u989D\u5E73\u53F0\uFF1A${formatPlatformNames(skippedPlatformIds)}\u3002\u5347\u7EA7 Pro \u53EF\u53D1\u5E03\u5230\u5168\u90E8\u5E73\u53F0\u3002` : taskId ? "Obsidian \u5DF2\u5B8C\u6210\u6295\u9012\uFF0C\u4E0D\u4F1A\u957F\u65F6\u95F4\u7B49\u5F85\u6240\u6709\u5E73\u53F0\u5B8C\u6210\u3002\u540E\u7EED\u8349\u7A3F\u94FE\u63A5\u3001\u5931\u8D25\u539F\u56E0\u548C\u91CD\u8BD5\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u4EFB\u52A1\u7A97\u53E3\u91CC\u67E5\u770B\u3002" : "\u5F53\u524D\u63D2\u4EF6\u7248\u672C\u6CA1\u6709\u8FD4\u56DE\u4EFB\u52A1 ID\u3002\u6587\u7AE0\u5DF2\u53D1\u9001\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u5386\u53F2\u8BB0\u5F55\u4E2D\u67E5\u770B\u6700\u8FD1\u4EFB\u52A1\u3002"
+      text: skippedPlatformIds.length ? `\u5DF2\u53D1\u5E03\u5230\uFF1A${formatPlatformNames(publishedPlatformIds)}\u3002\u8DF3\u8FC7 ${skippedPlatformIds.length} \u4E2A\u8D85\u51FA\u4ECA\u65E5\u989D\u5EA6\u7684\u5E73\u53F0\uFF1A${formatPlatformNames(skippedPlatformIds)}\u3002\u5347\u7EA7 Pro \u53EF\u53D1\u5E03\u5230\u5168\u90E8\u5E73\u53F0\u3002` : taskId ? "Obsidian \u5DF2\u5B8C\u6210\u6295\u9012\uFF0C\u4E0D\u4F1A\u957F\u65F6\u95F4\u7B49\u5F85\u6240\u6709\u5E73\u53F0\u5B8C\u6210\u3002\u540E\u7EED\u8349\u7A3F\u94FE\u63A5\u3001\u5931\u8D25\u539F\u56E0\u548C\u91CD\u8BD5\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u4EFB\u52A1\u7A97\u53E3\u91CC\u67E5\u770B\u3002" : "\u5F53\u524D\u63D2\u4EF6\u7248\u672C\u6CA1\u6709\u8FD4\u56DE\u4EFB\u52A1 ID\u3002\u6587\u7AE0\u5DF2\u53D1\u9001\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u5386\u53F2\u8BB0\u5F55\u4E2D\u67E5\u770B\u6700\u8FD1\u4EFB\u52A1\u3002"
     });
     const list = modal.contentEl.createDiv({ cls: "wechat-multiplatform-result-list" });
     const rawTaskPlatforms = Array.isArray(task == null ? void 0 : task.platforms) && task.platforms.length ? task.platforms : (publishedPlatformIds.length ? publishedPlatformIds : platforms).map((id) => ({ id, status: "queued" }));
@@ -17248,7 +17248,7 @@ var AppleStyleView = class extends ItemView {
       const body = row.createDiv({ cls: "wechat-multiplatform-result-body" });
       body.createEl("div", { text: platformName, cls: "wechat-multiplatform-result-name" });
       body.createEl("div", {
-        text: `\u514D\u8D39\u7248\u5355\u6B21\u6700\u591A ${(quotaResult == null ? void 0 : quotaResult.maxPlatforms) || 3} \u4E2A\u5E73\u53F0\uFF0C\u5F53\u524D\u5E73\u53F0\u672A\u5165\u961F\u3002`,
+        text: "\u514D\u8D39\u7248\u6BCF\u5929 3 \u4E2A\u5E73\u53F0\u989D\u5EA6\uFF0C\u5F53\u524D\u5E73\u53F0\u672A\u5165\u961F\u3002",
         cls: "wechat-multiplatform-result-detail"
       });
     }
@@ -17283,9 +17283,10 @@ var AppleStyleView = class extends ItemView {
       }).filter(Boolean);
       return names.length ? names.join("\u3001") : "\u65E0";
     };
-    const maxPlatforms = (quotaResult == null ? void 0 : quotaResult.maxPlatforms) || 3;
     const reason = (quotaResult == null ? void 0 : quotaResult.reason) || "";
-    const summaryText = (quotaResult == null ? void 0 : quotaResult.message) || (reason === "daily_limit" ? "\u514D\u8D39\u7248\u6BCF\u5929\u6700\u591A\u53D1\u5E03 1 \u6B21\u3002\u4ECA\u5929\u7684\u514D\u8D39\u53D1\u5E03\u6B21\u6570\u5DF2\u7528\u5B8C\uFF0C\u660E\u5929\u53EF\u4EE5\u7EE7\u7EED\uFF0C\u6216\u5347\u7EA7 Pro\u3002" : `\u514D\u8D39\u7248\u6BCF\u6B21\u6700\u591A ${maxPlatforms} \u4E2A\u5E73\u53F0\u3002\u4F60\u9009\u62E9\u4E86 ${requestedPlatformIds.length} \u4E2A\uFF0C\u8BF7\u51CF\u5C11\u5E73\u53F0\u540E\u91CD\u8BD5\uFF0C\u6216\u5347\u7EA7 Pro\u3002`);
+    const rawMessage = typeof (quotaResult == null ? void 0 : quotaResult.message) === "string" ? quotaResult.message.trim() : "";
+    const legacyQuotaMessage = /单次最多|每次最多|每天最多发布\s*1\s*次|每天最多\s*1\s*次/.test(rawMessage);
+    const summaryText = rawMessage && !legacyQuotaMessage ? rawMessage : "\u514D\u8D39\u7248\u4ECA\u65E5\u5E73\u53F0\u989D\u5EA6\u4E0D\u8DB3\uFF0C\u660E\u5929 0:00 \u91CD\u7F6E\uFF0C\u6216\u5347\u7EA7 Pro\u3002";
     if (typeof Modal !== "function") {
       new Notice(summaryText, 1e4);
       return;
@@ -17301,7 +17302,7 @@ var AppleStyleView = class extends ItemView {
     const summary = modal.contentEl.createDiv({ cls: "wechat-multiplatform-result-summary is-warning" });
     summary.createEl("div", {
       cls: "wechat-multiplatform-result-summary-title",
-      text: reason === "daily_limit" ? "\u4ECA\u65E5\u514D\u8D39\u6B21\u6570\u5DF2\u7528\u5B8C" : "\u8D85\u51FA\u514D\u8D39\u7248\u5E73\u53F0\u6570\u91CF"
+      text: reason === "daily_limit" ? "\u4ECA\u65E5\u5E73\u53F0\u989D\u5EA6\u4E0D\u8DB3" : "\u514D\u8D39\u7248\u5E73\u53F0\u989D\u5EA6\u4E0D\u8DB3"
     });
     summary.createEl("p", { text: summaryText });
     const list = modal.contentEl.createDiv({ cls: "wechat-multiplatform-result-list" });
