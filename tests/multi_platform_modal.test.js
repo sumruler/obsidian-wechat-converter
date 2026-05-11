@@ -35,7 +35,7 @@ function installModalCapture() {
   };
 }
 
-function makeView({ selectedPlatforms = ['zhihu'], cachedPlatforms = null } = {}) {
+function makeView({ selectedPlatforms = ['zhihu'], cachedPlatforms = null, bridge = null } = {}) {
   const platforms = cachedPlatforms || [
     { id: 'zhihu', name: '知乎', authKnown: true, authenticated: true, username: 'Lin' },
     { id: 'juejin', name: '掘金', authKnown: true, authenticated: false, error: '登录已失效' },
@@ -62,10 +62,18 @@ function makeView({ selectedPlatforms = ['zhihu'], cachedPlatforms = null } = {}
       },
     },
     getWechatSyncBridgeService: vi.fn(() => ({})),
+    saveSettings: vi.fn(),
   });
+  if (bridge) view.plugin.getWechatSyncBridgeService = vi.fn(() => bridge);
   view.app = { isMobile: false };
   view.currentHtml = '<p>hello</p>';
   view.getPublishContextFile = vi.fn(() => ({ path: 'a.md', basename: 'a' }));
+  view.getCurrentExportHtml = vi.fn(() => '<p>hello</p>');
+  view.getFrontmatterPublishMeta = vi.fn(() => ({ coverSrc: '' }));
+  view.getFirstImageFromArticle = vi.fn(() => '');
+  view.prepareHtmlForWechatsyncArticle = vi.fn(async (html) => html);
+  view.getWechatsyncTaskSnapshot = vi.fn(async () => null);
+  view.showMultiPlatformQuotaBlockedModal = vi.fn();
   return view;
 }
 
@@ -172,5 +180,84 @@ describe('AppleStyleView - showMultiPlatformSyncModal platform rows', () => {
     expect(list).not.toBeNull();
     const followers = bar.compareDocumentPosition(list);
     expect(followers & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows the free quota hint with a Pro upgrade action', async () => {
+    const view = makeView({ selectedPlatforms: ['zhihu'] });
+    view.openPublisherProPage = vi.fn();
+    await view.showMultiPlatformSyncModal();
+    const modal = modalCapture.getLastModal();
+
+    const hint = modal.contentEl.querySelector('.wechat-multiplatform-quota-hint');
+    expect(hint).not.toBeNull();
+    expect(hint.textContent).toContain('免费版每天 1 次');
+    const upgradeBtn = hint.querySelector('button');
+    expect(upgradeBtn.textContent).toBe('升级 Pro');
+
+    upgradeBtn.click();
+    expect(view.openPublisherProPage).toHaveBeenCalled();
+  });
+
+  it('passes truncate quotaPolicy and shows quota modal when the extension blocks the task', async () => {
+    const bridge = {
+      health: vi.fn().mockResolvedValue({ ok: true, capabilities: { quotaPolicy: true } }),
+      enqueueSyncArticle: vi.fn().mockResolvedValue({
+        accepted: false,
+        reason: 'platform_limit',
+        quotaBlocked: true,
+        maxPlatforms: 3,
+        skippedPlatforms: ['zhihu', 'juejin'],
+        message: '免费版每次最多 3 个平台。',
+      }),
+    };
+    const view = makeView({ selectedPlatforms: ['zhihu', 'juejin'], bridge });
+    await view.showMultiPlatformSyncModal();
+    const modal = modalCapture.getLastModal();
+    const syncBtn = modal.contentEl.querySelector('.wechat-modal-buttons .mod-cta');
+
+    await syncBtn.onclick();
+
+    expect(bridge.enqueueSyncArticle).toHaveBeenCalledWith(expect.objectContaining({
+      platforms: ['zhihu', 'juejin'],
+      source: 'obsidian',
+      quotaPolicy: 'truncate',
+    }));
+    expect(view.showMultiPlatformQuotaBlockedModal).toHaveBeenCalledWith(expect.objectContaining({
+      requestedPlatformIds: ['zhihu', 'juejin'],
+      quotaResult: expect.objectContaining({
+        accepted: false,
+        reason: 'platform_limit',
+      }),
+    }));
+  });
+
+  it('shows skipped platforms in the accepted task modal when quota truncates the request', () => {
+    const view = makeView({ selectedPlatforms: ['zhihu', 'juejin'] });
+    view.openPublisherProPage = vi.fn();
+
+    view.showWechatsyncEnqueueAcceptedModal({
+      syncId: 'sync-1',
+      title: 'a',
+      platforms: ['zhihu', 'juejin'],
+      quotaResult: {
+        accepted: true,
+        quotaBlocked: true,
+        maxPlatforms: 1,
+        publishedPlatforms: ['zhihu'],
+        skippedPlatforms: ['juejin'],
+      },
+    });
+
+    const modal = modalCapture.getLastModal();
+    expect(modal.titleEl.textContent).toBe('已发送到浏览器插件');
+    expect(modal.contentEl.textContent).toContain('已按免费版额度投递');
+    expect(modal.contentEl.textContent).toContain('跳过 1 个超额平台');
+    expect(modal.contentEl.textContent).toContain('掘金');
+
+    const upgradeBtn = Array.from(modal.contentEl.querySelectorAll('button'))
+      .find((button) => button.textContent === '升级 Pro');
+    expect(upgradeBtn).toBeDefined();
+    upgradeBtn.click();
+    expect(view.openPublisherProPage).toHaveBeenCalled();
   });
 });

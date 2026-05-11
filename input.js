@@ -69,6 +69,7 @@ const { stripMarkdownFrontmatter } = require('./services/markdown-utils');
 // 视图类型标识
 const APPLE_STYLE_VIEW = 'apple-style-converter';
 const APPLE_STYLE_VIEW_TITLE = 'Obsidian 发布助手';
+const OBSIDIAN_PUBLISHER_PRO_URL = 'https://xiaoweibox.top/obsidian-publisher/pro/';
 
 // Pure data helpers extracted to services/wechatsync-settings.js so the
 // views/ layer can normalize / read settings without depending on input.js.
@@ -3692,6 +3693,10 @@ class AppleStyleView extends ItemView {
     return false;
   }
 
+  openPublisherProPage() {
+    return this.openExternalUrl(OBSIDIAN_PUBLISHER_PRO_URL);
+  }
+
   showAccountSetupEmptyState() {
     const { Modal } = require('obsidian');
     if (typeof Modal !== 'function') {
@@ -4142,13 +4147,21 @@ class AppleStyleView extends ItemView {
     platforms = [],
     task = null,
     usedFallbackSend = false,
+    quotaResult = null,
   } = {}) {
     const { Modal } = require('obsidian');
     const taskId = String(syncId || '').trim();
+    const skippedPlatformIds = parseWechatsyncPlatformIds(quotaResult?.skippedPlatforms || []);
+    const publishedPlatformIds = parseWechatsyncPlatformIds(
+      quotaResult?.publishedPlatforms?.length ? quotaResult.publishedPlatforms : (quotaResult?.platforms || platforms)
+    );
     if (typeof Modal !== 'function') {
       const syncIdText = taskId ? `（任务 ${taskId}）` : '';
       const fallbackText = usedFallbackSend ? '当前插件未提供任务 ID，' : '';
-      new Notice(`✅ 已发送到浏览器插件${syncIdText}。${fallbackText}请在浏览器插件的历史或目标平台草稿箱查看结果。`, 10000);
+      const quotaText = skippedPlatformIds.length
+        ? `已跳过 ${skippedPlatformIds.length} 个超额平台。`
+        : '';
+      new Notice(`✅ 已发送到浏览器插件${syncIdText}。${fallbackText}${quotaText}请在浏览器插件的历史或目标平台草稿箱查看结果。`, 10000);
       return;
     }
 
@@ -4161,25 +4174,35 @@ class AppleStyleView extends ItemView {
     modal.modalEl?.addClass('wechat-publish-shell');
     modal.modalEl?.addClass('wechat-multiplatform-shell');
 
-    const summary = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-result-summary is-success' });
-    summary.createEl('div', {
-      cls: 'wechat-multiplatform-result-summary-title',
-      text: '任务已交给浏览器插件',
+    const summary = modal.contentEl.createDiv({
+      cls: `wechat-multiplatform-result-summary ${skippedPlatformIds.length ? 'is-warning' : 'is-success'}`,
     });
-    summary.createEl('p', {
-      text: taskId
-        ? 'Obsidian 已完成投递，不会长时间等待所有平台完成。后续草稿链接、失败原因和重试请在浏览器插件任务窗口里查看。'
-        : '当前插件版本没有返回任务 ID。文章已发送，请在浏览器插件历史记录中查看最近任务。',
-    });
-
-    const list = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-result-list' });
     const platformById = new Map(
       getConfiguredWechatsyncPlatforms(this.plugin.settings.multiPlatformSync)
         .map((platform) => [platform.id, platform])
     );
+    const formatPlatformNames = (ids = []) => {
+      const names = parseWechatsyncPlatformIds(ids)
+        .map((id) => platformById.get(id)?.name || id)
+        .filter(Boolean);
+      return names.length ? names.join('、') : '无';
+    };
+    summary.createEl('div', {
+      cls: 'wechat-multiplatform-result-summary-title',
+      text: skippedPlatformIds.length ? '已按免费版额度投递' : '任务已交给浏览器插件',
+    });
+    summary.createEl('p', {
+      text: skippedPlatformIds.length
+        ? `已发布到：${formatPlatformNames(publishedPlatformIds)}。跳过 ${skippedPlatformIds.length} 个超额平台：${formatPlatformNames(skippedPlatformIds)}。升级 Pro 可发布到全部平台。`
+        : (taskId
+          ? 'Obsidian 已完成投递，不会长时间等待所有平台完成。后续草稿链接、失败原因和重试请在浏览器插件任务窗口里查看。'
+          : '当前插件版本没有返回任务 ID。文章已发送，请在浏览器插件历史记录中查看最近任务。'),
+    });
+
+    const list = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-result-list' });
     const taskPlatforms = Array.isArray(task?.platforms) && task.platforms.length
       ? task.platforms
-      : platforms.map((id) => ({ id, status: 'queued' }));
+      : (publishedPlatformIds.length ? publishedPlatformIds : platforms).map((id) => ({ id, status: 'queued' }));
 
     if (taskId) {
       const taskRow = list.createDiv({ cls: 'wechat-multiplatform-result-row' });
@@ -4221,7 +4244,26 @@ class AppleStyleView extends ItemView {
       });
     }
 
+    for (const platformId of skippedPlatformIds) {
+      const platformName = platformById.get(platformId)?.name || platformId;
+      const row = list.createDiv({ cls: 'wechat-multiplatform-result-row is-warning' });
+      row.createEl('div', {
+        text: '已跳过',
+        cls: 'wechat-multiplatform-result-pill is-warning',
+      });
+      const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
+      body.createEl('div', { text: platformName, cls: 'wechat-multiplatform-result-name' });
+      body.createEl('div', {
+        text: `免费版单次最多 ${quotaResult?.maxPlatforms || 3} 个平台，当前平台未入队。`,
+        cls: 'wechat-multiplatform-result-detail',
+      });
+    }
+
     const btnRow = modal.contentEl.createDiv({ cls: 'wechat-modal-buttons' });
+    if (quotaResult?.quotaBlocked) {
+      const upgradeBtn = btnRow.createEl('button', { text: '升级 Pro' });
+      upgradeBtn.onclick = () => this.openPublisherProPage();
+    }
     const closeBtn = btnRow.createEl('button', { text: '关闭' });
     closeBtn.onclick = () => modal.close();
     if (taskId) {
@@ -4230,6 +4272,80 @@ class AppleStyleView extends ItemView {
         this.openWechatsyncTask(taskId);
       };
     }
+    modal.open();
+  }
+
+  showMultiPlatformQuotaBlockedModal({ quotaResult = {}, requestedPlatformIds = [] } = {}) {
+    const { Modal } = require('obsidian');
+    const platformById = new Map(
+      getConfiguredWechatsyncPlatforms(this.plugin.settings.multiPlatformSync)
+        .map((platform) => [platform.id, platform])
+    );
+    const skippedPlatformIds = parseWechatsyncPlatformIds(
+      quotaResult?.skippedPlatforms?.length ? quotaResult.skippedPlatforms : requestedPlatformIds
+    );
+    const formatPlatformNames = (ids = []) => {
+      const names = parseWechatsyncPlatformIds(ids)
+        .map((id) => platformById.get(id)?.name || id)
+        .filter(Boolean);
+      return names.length ? names.join('、') : '无';
+    };
+    const maxPlatforms = quotaResult?.maxPlatforms || 3;
+    const reason = quotaResult?.reason || '';
+    const summaryText = quotaResult?.message || (reason === 'daily_limit'
+      ? '免费版每天最多发布 1 次。今天的免费发布次数已用完，明天可以继续，或升级 Pro。'
+      : `免费版每次最多 ${maxPlatforms} 个平台。你选择了 ${requestedPlatformIds.length} 个，请减少平台后重试，或升级 Pro。`);
+
+    if (typeof Modal !== 'function') {
+      new Notice(summaryText, 10000);
+      return;
+    }
+
+    const modal = new Modal(this.app);
+    modal.titleEl.setText('发布受限');
+    modal.titleEl.addClass?.('wechat-multiplatform-title');
+    modal.contentEl.addClass('wechat-sync-modal');
+    modal.contentEl.addClass('wechat-multiplatform-modal');
+    modal.contentEl.addClass('wechat-multiplatform-result-modal');
+    modal.modalEl?.addClass('wechat-publish-shell');
+    modal.modalEl?.addClass('wechat-multiplatform-shell');
+
+    const summary = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-result-summary is-warning' });
+    summary.createEl('div', {
+      cls: 'wechat-multiplatform-result-summary-title',
+      text: reason === 'daily_limit' ? '今日免费次数已用完' : '超出免费版平台数量',
+    });
+    summary.createEl('p', { text: summaryText });
+
+    const list = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-result-list' });
+    const row = list.createDiv({ cls: 'wechat-multiplatform-result-row is-warning' });
+    row.createEl('div', {
+      text: '未发布',
+      cls: 'wechat-multiplatform-result-pill is-warning',
+    });
+    const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
+    body.createEl('div', {
+      text: reason === 'daily_limit' ? '本次发布未入队' : '已跳过平台',
+      cls: 'wechat-multiplatform-result-name',
+    });
+    body.createEl('div', {
+      text: skippedPlatformIds.length
+        ? formatPlatformNames(skippedPlatformIds)
+        : '浏览器插件没有返回平台明细，请减少平台后重试。',
+      cls: 'wechat-multiplatform-result-detail',
+    });
+
+    const btnRow = modal.contentEl.createDiv({ cls: 'wechat-modal-buttons' });
+    const retryBtn = btnRow.createEl('button', { text: '重新选择平台' });
+    retryBtn.onclick = () => {
+      modal.close();
+      this.showMultiPlatformSyncModal();
+    };
+    const upgradeBtn = btnRow.createEl('button', { text: '升级 Pro', cls: 'mod-cta' });
+    upgradeBtn.onclick = () => this.openPublisherProPage();
+    const closeBtn = btnRow.createEl('button', { text: '关闭' });
+    closeBtn.onclick = () => modal.close();
+
     modal.open();
   }
 

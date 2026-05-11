@@ -460,6 +460,56 @@ describe('Wechatsync bridge service', () => {
     });
   });
 
+  it('passes quotaPolicy through when enqueuing article sync', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      requestTimeoutMs: 1000,
+      connectTimeoutMs: 1000,
+      idFactory: () => 'enqueue-quota-1',
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const extension = await connectExtension(port, (message) => {
+      expect(message).toMatchObject({
+        id: 'enqueue-quota-1',
+        method: 'enqueueSyncArticle',
+        params: {
+          platforms: ['zhihu', 'juejin'],
+          source: 'obsidian',
+          quotaPolicy: 'truncate',
+        },
+      });
+      return {
+        result: {
+          accepted: true,
+          syncId: 'extension-sync-quota',
+          platforms: ['zhihu'],
+          skippedPlatforms: ['juejin'],
+          quotaBlocked: true,
+        },
+      };
+    });
+    cleanup.push(extension);
+
+    await service.waitForConnection(1000);
+    await expect(service.enqueueSyncArticle({
+      platforms: ['zhihu', 'juejin'],
+      title: '测试文章',
+      markdown: '# 正文',
+      content: '<h1>正文</h1>',
+      quotaPolicy: 'truncate',
+    })).resolves.toMatchObject({
+      accepted: true,
+      quotaBlocked: true,
+      skippedPlatforms: ['juejin'],
+    });
+  });
+
   it('queries and opens extension sync tasks through the bridge', async () => {
     const port = await getFreePort();
     let requestIndex = 0;

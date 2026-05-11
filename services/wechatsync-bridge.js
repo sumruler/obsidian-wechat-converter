@@ -816,12 +816,25 @@ function createWechatSyncBridgeService(options = {}) {
     }, { timeoutMs });
   }
 
-  function enqueueSyncArticle({ platforms, title, markdown, content, cover, source = 'obsidian', timeoutMs = 10000 }) {
-    return requestWithMethodFallback('enqueueSyncArticle', 'enqueue_sync_article', {
+  function enqueueSyncArticle({
+    platforms,
+    title,
+    markdown,
+    content,
+    cover,
+    source = 'obsidian',
+    quotaPolicy,
+    timeoutMs = 10000,
+  }) {
+    const params = {
       platforms,
       source,
       article: { title, markdown, content, cover },
-    }, { timeoutMs });
+    };
+    if (quotaPolicy === 'block' || quotaPolicy === 'truncate') {
+      params.quotaPolicy = quotaPolicy;
+    }
+    return requestWithMethodFallback('enqueueSyncArticle', 'enqueue_sync_article', params, { timeoutMs });
   }
 
   function getSyncTask(syncIdOrOptions, { timeoutMs = 5000 } = {}) {

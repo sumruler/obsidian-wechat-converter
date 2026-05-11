@@ -32,6 +32,7 @@ const {
 
 const {
   getAvailableWechatsyncPlatforms,
+  normalizeWechatSyncCapabilities,
   normalizeMultiPlatformConnection,
   normalizeMultiPlatformSyncSettings,
   normalizeWechatSyncRecentTasks,
@@ -45,9 +46,40 @@ const {
 
 const { stripMarkdownFrontmatter } = require('../../services/markdown-utils');
 
+const QUOTA_POLICY = 'truncate';
+
 function isMobileClient(app) {
   if (typeof Platform?.isMobile === 'boolean') return Platform.isMobile;
   return !!app?.isMobile;
+}
+
+function openPublisherProPage(view) {
+  if (typeof view?.openPublisherProPage === 'function') return view.openPublisherProPage();
+  if (typeof view?.openExternalUrl === 'function') {
+    return view.openExternalUrl('https://xiaoweibox.top/obsidian-publisher/pro/');
+  }
+  return false;
+}
+
+async function detectQuotaPolicySupport(bridge, cachedConnection = {}) {
+  const cachedCapabilities = normalizeWechatSyncCapabilities(cachedConnection.capabilities || {});
+  if (cachedCapabilities.quotaPolicy === true) return cachedCapabilities;
+  if (!bridge || typeof bridge.health !== 'function') return cachedCapabilities;
+
+  try {
+    const health = await bridge.health({ timeoutMs: 5000 });
+    return {
+      ...cachedCapabilities,
+      ...normalizeWechatSyncCapabilities(health?.capabilities || {}),
+    };
+  } catch (error) {
+    if (isWechatSyncUnsupportedMethodError(error)) return cachedCapabilities;
+    console.debug?.('[Wechatsync] quota feature detection skipped', {
+      code: error?.code,
+      message: error?.message || String(error),
+    });
+    return cachedCapabilities;
+  }
 }
 
 async function showMultiPlatformPublishModal(view, options = {}) {
@@ -73,6 +105,15 @@ async function showMultiPlatformPublishModal(view, options = {}) {
   introText.createEl('p', {
     text: '选择平台后通过浏览器插件保存为草稿。',
   });
+  const quotaHint = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-quota-hint' });
+  quotaHint.createEl('span', {
+    text: '免费版每天 1 次，单次最多 3 个平台。',
+  });
+  const quotaUpgradeBtn = quotaHint.createEl('button', {
+    text: '升级 Pro',
+    cls: 'wechat-multiplatform-quota-link',
+  });
+  quotaUpgradeBtn.onclick = () => openPublisherProPage(view);
 
   if (!bridgeSettings.enabled) {
     const disabledHint = modal.contentEl.createDiv({ cls: 'wechat-sync-empty-state' });
@@ -239,6 +280,7 @@ async function showMultiPlatformPublishModal(view, options = {}) {
         hasCover: !!cover,
       });
       const bridge = view.plugin.getWechatSyncBridgeService();
+      const detectedCapabilities = await detectQuotaPolicySupport(bridge, cachedConnection);
       let result = null;
       let usedFallbackSend = false;
       try {
@@ -249,6 +291,7 @@ async function showMultiPlatformPublishModal(view, options = {}) {
           content,
           cover,
           source: 'obsidian',
+          quotaPolicy: QUOTA_POLICY,
         });
       } catch (enqueueError) {
         if (!isWechatSyncUnsupportedMethodError(enqueueError)) throw enqueueError;
@@ -268,10 +311,36 @@ async function showMultiPlatformPublishModal(view, options = {}) {
         syncId: result?.syncId,
         requestId: result?.requestId,
         accepted: result?.accepted,
+        quotaBlocked: result?.quotaBlocked,
+        skippedPlatforms: result?.skippedPlatforms,
         usedFallbackSend,
         platformCount: requestedPlatformIds.length,
+        supportsQuotaPolicy: detectedCapabilities.quotaPolicy === true,
       });
       const currentMultiPlatformSettings = normalizeMultiPlatformSyncSettings(view.plugin.settings.multiPlatformSync);
+      if (result?.accepted === false) {
+        notice.hide();
+        modal.close();
+        view.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
+          ...currentMultiPlatformSettings,
+          connection: {
+            ...currentMultiPlatformSettings.connection,
+            status: 'connected',
+            checkedAt: Date.now(),
+            capabilities: {
+              ...(currentMultiPlatformSettings.connection?.capabilities || {}),
+              ...detectedCapabilities,
+            },
+            message: result?.message || '浏览器插件已拒绝本次发布。',
+          },
+        });
+        await view.plugin.saveSettings();
+        view.showMultiPlatformQuotaBlockedModal({
+          quotaResult: result,
+          requestedPlatformIds,
+        });
+        return;
+      }
       if (result?.syncId) notice.setMessage('已投递，正在读取插件任务状态...');
       const taskSnapshot = result?.syncId
         ? await view.getWechatsyncTaskSnapshot(bridge, result.syncId)
@@ -296,7 +365,9 @@ async function showMultiPlatformPublishModal(view, options = {}) {
           {
             syncId: result.syncId,
             title,
-            platforms: requestedPlatformIds,
+            platforms: Array.isArray(result?.publishedPlatforms) && result.publishedPlatforms.length
+              ? result.publishedPlatforms
+              : (Array.isArray(result?.platforms) && result.platforms.length ? result.platforms : requestedPlatformIds),
             createdAt: Date.now(),
           },
           ...(currentMultiPlatformSettings.recentTasks || []),
@@ -310,6 +381,10 @@ async function showMultiPlatformPublishModal(view, options = {}) {
           status: 'connected',
           checkedAt: Date.now(),
           platforms: cachedPlatformsAfterSync,
+          capabilities: {
+            ...(currentMultiPlatformSettings.connection?.capabilities || {}),
+            ...detectedCapabilities,
+          },
           message: '',
         },
       });
@@ -320,6 +395,7 @@ async function showMultiPlatformPublishModal(view, options = {}) {
         platforms: requestedPlatformIds,
         task: taskSnapshot,
         usedFallbackSend,
+        quotaResult: result,
       });
     } catch (error) {
       notice.hide();
