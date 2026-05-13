@@ -809,10 +809,10 @@ function createWechatSyncBridgeService(options = {}) {
     return requestWithMethodFallback('checkAuth', 'check_auth', params, { timeoutMs });
   }
 
-  function syncArticle({ platforms, title, markdown, content, cover, timeoutMs = DEFAULT_SYNC_REQUEST_TIMEOUT_MS }) {
+  function syncArticle({ platforms, title, markdown, content, cover, assets, timeoutMs = DEFAULT_SYNC_REQUEST_TIMEOUT_MS }) {
     return request('syncArticle', {
       platforms,
-      article: { title, markdown, content, cover },
+      article: { title, markdown, content, cover, assets },
     }, { timeoutMs });
   }
 
@@ -822,6 +822,7 @@ function createWechatSyncBridgeService(options = {}) {
     markdown,
     content,
     cover,
+    assets,
     source = 'obsidian',
     quotaPolicy,
     timeoutMs = 10000,
@@ -829,7 +830,7 @@ function createWechatSyncBridgeService(options = {}) {
     const params = {
       platforms,
       source,
-      article: { title, markdown, content, cover },
+      article: { title, markdown, content, cover, assets },
     };
     if (quotaPolicy === 'block' || quotaPolicy === 'truncate') {
       params.quotaPolicy = quotaPolicy;
@@ -865,10 +866,10 @@ function createWechatSyncBridgeService(options = {}) {
     }, { timeoutMs });
   }
 
-  function sendArticle({ platforms, title, markdown, content, cover }) {
+  function sendArticle({ platforms, title, markdown, content, cover, assets }) {
     return send('syncArticle', {
       platforms,
-      article: { title, markdown, content, cover },
+      article: { title, markdown, content, cover, assets },
     });
   }
 

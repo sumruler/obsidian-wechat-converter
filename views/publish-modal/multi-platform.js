@@ -45,6 +45,11 @@ const {
 } = require('../connection-status-bar.js');
 
 const { stripMarkdownFrontmatter } = require('../../services/markdown-utils');
+const {
+  formatArticleImageWarnings,
+  replaceArticleContentImageSources,
+  resolveArticleImages,
+} = require('../../services/article-image-assets');
 
 const QUOTA_POLICY = 'truncate';
 const FREE_DAILY_PLATFORM_QUOTA = 3;
@@ -277,19 +282,31 @@ async function showMultiPlatformPublishModal(view, options = {}) {
     }
     const activeFile = view.getPublishContextFile();
     const title = activeFile?.basename || '无标题文章';
-    const markdown = stripMarkdownFrontmatter(view.lastResolvedMarkdown || '');
+    const rawMarkdown = stripMarkdownFrontmatter(view.lastResolvedMarkdown || '');
     const exportHtml = view.getCurrentExportHtml() || view.currentHtml || '';
-    const cover = view.sessionCoverBase64
-      || view.getFrontmatterPublishMeta(activeFile).coverSrc
-      || view.getFirstImageFromArticle()
-      || '';
+    const rawCover = view.sessionCoverBase64 || '';
     const notice = new Notice('正在准备并发送到浏览器插件...', 0);
     syncBtn.disabled = true;
     syncBtn.addClass?.('apple-btn-disabled');
     const sendStartedAt = Date.now();
     const requestedPlatformIds = Array.from(selectedPlatforms);
     try {
-      const content = await view.prepareHtmlForWechatsyncArticle(exportHtml);
+      const resolvedImages = await resolveArticleImages(rawMarkdown, activeFile, {
+        app: view.app,
+        cover: rawCover,
+      });
+      if (resolvedImages.warnings?.length) {
+        throw new Error(`本地图片处理失败：${formatArticleImageWarnings(resolvedImages.warnings)}`);
+      }
+      const markdown = resolvedImages.markdown;
+      const assets = resolvedImages.assets;
+      const fallbackCover = view.getFirstImageFromArticle();
+      const cover = resolvedImages.cover
+        || resolvedImages.firstImageSrc
+        || (/^(https?:\/\/|data:image\/)/i.test(fallbackCover || '') ? fallbackCover : '')
+        || '';
+      const preparedContent = await view.prepareHtmlForWechatsyncArticle(exportHtml);
+      const content = replaceArticleContentImageSources(preparedContent, assets);
       console.info('[Wechatsync] enqueueSyncArticle started', {
         platformCount: requestedPlatformIds.length,
         platforms: requestedPlatformIds,
@@ -297,6 +314,8 @@ async function showMultiPlatformPublishModal(view, options = {}) {
         hasMarkdown: !!markdown,
         contentLength: content.length,
         hasCover: !!cover,
+        assetCount: assets.length,
+        assetBytes: assets.reduce((sum, asset) => sum + (asset.size || 0), 0),
       });
       const bridge = view.plugin.getWechatSyncBridgeService();
       const detectedCapabilities = await detectQuotaPolicySupport(bridge, cachedConnection);
@@ -309,6 +328,7 @@ async function showMultiPlatformPublishModal(view, options = {}) {
           markdown,
           content,
           cover,
+          assets,
           source: 'obsidian',
           quotaPolicy: QUOTA_POLICY,
         });
@@ -322,6 +342,7 @@ async function showMultiPlatformPublishModal(view, options = {}) {
           markdown,
           content,
           cover,
+          assets,
         });
       }
       console.info('[Wechatsync] enqueueSyncArticle accepted', {

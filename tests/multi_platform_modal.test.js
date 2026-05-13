@@ -35,7 +35,7 @@ function installModalCapture() {
   };
 }
 
-function makeView({ selectedPlatforms = ['zhihu'], cachedPlatforms = null, bridge = null } = {}) {
+function makeView({ selectedPlatforms = ['zhihu'], cachedPlatforms = null, bridge = null, app = null } = {}) {
   const platforms = cachedPlatforms || [
     { id: 'zhihu', name: '知乎', authKnown: true, authenticated: true, username: 'Lin' },
     { id: 'juejin', name: '掘金', authKnown: true, authenticated: false, error: '登录已失效' },
@@ -65,8 +65,10 @@ function makeView({ selectedPlatforms = ['zhihu'], cachedPlatforms = null, bridg
     saveSettings: vi.fn(),
   });
   if (bridge) view.plugin.getWechatSyncBridgeService = vi.fn(() => bridge);
-  view.app = { isMobile: false };
+  view.app = app || { isMobile: false };
+  if (view.app.isMobile === undefined) view.app.isMobile = false;
   view.currentHtml = '<p>hello</p>';
+  view.lastResolvedMarkdown = '';
   view.getPublishContextFile = vi.fn(() => ({ path: 'a.md', basename: 'a' }));
   view.getCurrentExportHtml = vi.fn(() => '<p>hello</p>');
   view.getFrontmatterPublishMeta = vi.fn(() => ({ coverSrc: '' }));
@@ -263,6 +265,55 @@ describe('AppleStyleView - showMultiPlatformSyncModal platform rows', () => {
         accepted: false,
         reason: 'daily_limit',
       }),
+    }));
+  });
+
+  it('sends local markdown images as bridge assets and rewrites local HTML src values', async () => {
+    const imageFile = {
+      path: 'notes/assets/local.png',
+      name: 'local.png',
+      extension: 'png',
+      bytes: Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]),
+    };
+    const app = {
+      isMobile: false,
+      metadataCache: {
+        getFirstLinkpathDest: vi.fn((linkpath) => (linkpath === 'assets/local.png' ? imageFile : null)),
+      },
+      vault: {
+        readBinary: vi.fn(async () => imageFile.bytes),
+        getResourcePath: vi.fn(() => 'app://local/notes%2Fassets%2Flocal.png'),
+        getAbstractFileByPath: vi.fn(() => null),
+      },
+    };
+    const bridge = {
+      health: vi.fn().mockResolvedValue({ ok: true, capabilities: { quotaPolicy: true } }),
+      enqueueSyncArticle: vi.fn().mockResolvedValue({ accepted: true, syncId: 'sync-1' }),
+    };
+    const view = makeView({ selectedPlatforms: ['zhihu'], bridge, app });
+    view.lastResolvedMarkdown = '![图](assets/local.png)';
+    view.getCurrentExportHtml = vi.fn(() => '<p><img src="app://local/notes%2Fassets%2Flocal.png" alt="图"></p>');
+    view.prepareHtmlForWechatsyncArticle = vi.fn(async (html) => html);
+    view.showWechatsyncEnqueueAcceptedModal = vi.fn();
+
+    await view.showMultiPlatformSyncModal();
+    const modal = modalCapture.getLastModal();
+    const syncBtn = modal.contentEl.querySelector('.wechat-modal-buttons .mod-cta');
+
+    await syncBtn.onclick();
+
+    expect(bridge.enqueueSyncArticle).toHaveBeenCalledWith(expect.objectContaining({
+      markdown: '![图](asset://image-1)',
+      content: '<p><img src="asset://image-1" alt="图"></p>',
+      cover: 'asset://image-1',
+      assets: [
+        expect.objectContaining({
+          id: 'image-1',
+          filename: 'local.png',
+          mimeType: 'image/png',
+          base64: imageFile.bytes.toString('base64'),
+        }),
+      ],
     }));
   });
 
