@@ -1698,6 +1698,42 @@ var require_obsidian_triplet_serializer = __commonJS({
         callout.replaceWith(...replacementNodes);
       }
     }
+    function getObsidianCalloutParts(callout) {
+      const typeRaw = callout.getAttribute("data-callout") || callout.getAttribute("data-callout-type") || "";
+      const type = String(typeRaw || "").trim().toLowerCase();
+      const titleEl = callout.querySelector(":scope > .callout-title .callout-title-inner") || callout.querySelector(":scope > .callout-title-inner") || callout.querySelector(":scope > .callout-title");
+      const titleText = String((titleEl == null ? void 0 : titleEl.textContent) || "").trim();
+      const contentEl = callout.querySelector(":scope > .callout-content") || callout.querySelector(":scope > .callout-body");
+      return { type, titleText, contentEl };
+    }
+    function convertObsidianImageSwipeCallouts(container) {
+      if (!container)
+        return;
+      const callouts = Array.from(
+        container.querySelectorAll("div.callout,aside.callout,blockquote.callout,section.callout")
+      );
+      for (const callout of callouts) {
+        if (!callout || !callout.parentNode)
+          continue;
+        const { type, titleText, contentEl } = getObsidianCalloutParts(callout);
+        if (type !== "image-swipe" && type !== "image-sensitive")
+          continue;
+        const sourceEl = contentEl || callout;
+        const imgs = Array.from(sourceEl.querySelectorAll("img"));
+        if (!imgs.length)
+          continue;
+        const block = document.createElement("section");
+        block.setAttribute("data-owc-image-swipe", "1");
+        block.setAttribute("data-owc-image-swipe-type", type);
+        if (type === "image-sensitive") {
+          block.setAttribute("data-owc-image-swipe-warning", encodeURIComponent(titleText || IMAGE_SWIPE_DEFAULT_WARNING));
+        } else {
+          block.setAttribute("data-owc-image-swipe-hint", encodeURIComponent(titleText || IMAGE_SWIPE_DEFAULT_HINT));
+        }
+        imgs.forEach((img) => block.appendChild(img));
+        callout.replaceWith(block);
+      }
+    }
     function sanitizeClassList(el, tagName, finalStage = false) {
       const className = el.getAttribute("class");
       if (!className)
@@ -1799,7 +1835,7 @@ var require_obsidian_triplet_serializer = __commonJS({
         if (tagName === "a")
           return /* @__PURE__ */ new Set(["href", "style"]);
         if (tagName === "img")
-          return /* @__PURE__ */ new Set(["src", "alt", "style", "width", "height", "class"]);
+          return /* @__PURE__ */ new Set(["src", "alt", "style", "width", "height", "class", "referrerpolicy"]);
         if (tagName === "section" && !finalStage) {
           return /* @__PURE__ */ new Set(["style", "class", "data-owc-image-swipe", "data-owc-image-swipe-type", "data-owc-image-swipe-warning", "data-owc-image-swipe-hint"]);
         }
@@ -2183,6 +2219,13 @@ var require_obsidian_triplet_serializer = __commonJS({
       }
       const rawAlt = img.getAttribute("alt") || "";
       const alt = buildLegacyParityImageAlt(img, rawAlt);
+      const widthHint = extractWidthHintFromText(alt);
+      if (widthHint && !img.getAttribute("width")) {
+        img.setAttribute("width", widthHint);
+      }
+      if (/^(?:https?:)?\/\//i.test(src)) {
+        img.setAttribute("referrerpolicy", "no-referrer");
+      }
       img.setAttribute("src", src);
       img.setAttribute("alt", alt);
       return {
@@ -2834,6 +2877,7 @@ var require_obsidian_triplet_serializer = __commonJS({
       container.innerHTML = root ? root.innerHTML : "";
       materializeImageEmbedPlaceholders(container, converter);
       promoteImageEmbedAltHints(container);
+      convertObsidianImageSwipeCallouts(container);
       convertObsidianCalloutsToLegacy(container, converter);
       pruneObsidianOnlyAttributes(container, { finalStage: false });
       normalizeLegacyTagAliases(container);
@@ -4721,8 +4765,39 @@ var require_obsidian_triplet_renderer = __commonJS({
       const titledMatch = value.match(/^(.+?)\s+(['"]).*\2\s*$/);
       return (titledMatch ? titledMatch[1] : value).trim();
     }
+    function parseImageSwipeBareRemoteUrlLine(value) {
+      const match = String(value || "").trim().match(/^<?((?:https?:)?\/\/[^\s<>]+)>?$/i);
+      if (!match)
+        return null;
+      return {
+        src: encodeURI(match[1]),
+        alt: ""
+      };
+    }
+    function isImageSwipeRemoteSrc(src) {
+      return /^(?:https?:)?\/\//i.test(String(src || "").trim());
+    }
+    function extractImageSwipeWidthHint(alt) {
+      const match = String(alt || "").match(/\|\s*(\d{2,4})(?:x\d+)?\s*$/i);
+      return match ? match[1] : "";
+    }
+    function renderImageSwipeImgTag(image) {
+      const attrs = [
+        `src="${escapeImageSwipeHtmlAttr(image.src)}"`,
+        `alt="${escapeImageSwipeHtmlAttr(image.alt)}"`
+      ];
+      const width = extractImageSwipeWidthHint(image.alt);
+      if (width)
+        attrs.push(`width="${width}"`);
+      if (isImageSwipeRemoteSrc(image.src))
+        attrs.push('referrerpolicy="no-referrer"');
+      return `<img ${attrs.join(" ")}>`;
+    }
     function parseImageSwipeMarkdownLine(line) {
       const value = String(line || "").trim();
+      const bareRemoteImage = parseImageSwipeBareRemoteUrlLine(value);
+      if (bareRemoteImage)
+        return bareRemoteImage;
       const wikiMatch = value.match(/^!\[\[([^\]|]+)(?:\|([^\]]+))?]]$/);
       if (wikiMatch) {
         return {
@@ -4832,6 +4907,18 @@ var require_obsidian_triplet_renderer = __commonJS({
       }
       return images;
     }
+    function hasRemoteImageSwipeImage(blockLines) {
+      return collectImageSwipeImages(blockLines).some((image) => isImageSwipeRemoteSrc(image.src));
+    }
+    function normalizeBareRemoteImageSwipeQuoteLine(line) {
+      const match = String(line || "").match(/^(\s{0,3}>\s?)([\s\S]*)$/);
+      if (!match)
+        return line;
+      const image = parseImageSwipeBareRemoteUrlLine(match[2]);
+      if (!image)
+        return line;
+      return `${match[1]}![](${image.src})`;
+    }
     function renderImageSwipeHtmlBlock(type, blockLines, optionText) {
       const images = collectImageSwipeImages(blockLines);
       if (!images.length)
@@ -4847,7 +4934,7 @@ var require_obsidian_triplet_renderer = __commonJS({
       }
       return [
         `<section ${attrs.join(" ")}>`,
-        ...images.map((image) => `<img src="${escapeImageSwipeHtmlAttr(image.src)}" alt="${escapeImageSwipeHtmlAttr(image.alt)}">`),
+        ...images.map((image) => renderImageSwipeImgTag(image)),
         "</section>"
       ];
     }
@@ -4907,6 +4994,10 @@ var require_obsidian_triplet_renderer = __commonJS({
           originalLines.push(lines[i]);
           blockLines.push(stripSingleQuotePrefix(lines[i]));
           i += 1;
+        }
+        if (hasRemoteImageSwipeImage(blockLines)) {
+          output.push(...originalLines.map((line, index) => index === 0 ? line : normalizeBareRemoteImageSwipeQuoteLine(line)));
+          continue;
         }
         const rendered = renderImageSwipeHtmlBlock(callout.type, blockLines, callout.optionText);
         if (rendered) {

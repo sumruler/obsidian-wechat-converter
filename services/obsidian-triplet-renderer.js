@@ -806,8 +806,40 @@ function parseImageSwipeMarkdownTarget(rawTarget) {
   return (titledMatch ? titledMatch[1] : value).trim();
 }
 
+function parseImageSwipeBareRemoteUrlLine(value) {
+  const match = String(value || '').trim().match(/^<?((?:https?:)?\/\/[^\s<>]+)>?$/i);
+  if (!match) return null;
+  return {
+    src: encodeURI(match[1]),
+    alt: '',
+  };
+}
+
+function isImageSwipeRemoteSrc(src) {
+  return /^(?:https?:)?\/\//i.test(String(src || '').trim());
+}
+
+function extractImageSwipeWidthHint(alt) {
+  const match = String(alt || '').match(/\|\s*(\d{2,4})(?:x\d+)?\s*$/i);
+  return match ? match[1] : '';
+}
+
+function renderImageSwipeImgTag(image) {
+  const attrs = [
+    `src="${escapeImageSwipeHtmlAttr(image.src)}"`,
+    `alt="${escapeImageSwipeHtmlAttr(image.alt)}"`,
+  ];
+  const width = extractImageSwipeWidthHint(image.alt);
+  if (width) attrs.push(`width="${width}"`);
+  if (isImageSwipeRemoteSrc(image.src)) attrs.push('referrerpolicy="no-referrer"');
+  return `<img ${attrs.join(' ')}>`;
+}
+
 function parseImageSwipeMarkdownLine(line) {
   const value = String(line || '').trim();
+  const bareRemoteImage = parseImageSwipeBareRemoteUrlLine(value);
+  if (bareRemoteImage) return bareRemoteImage;
+
   const wikiMatch = value.match(/^!\[\[([^\]|]+)(?:\|([^\]]+))?]]$/);
   if (wikiMatch) {
     return {
@@ -937,6 +969,18 @@ function collectImageSwipeImages(blockLines) {
   return images;
 }
 
+function hasRemoteImageSwipeImage(blockLines) {
+  return collectImageSwipeImages(blockLines).some((image) => isImageSwipeRemoteSrc(image.src));
+}
+
+function normalizeBareRemoteImageSwipeQuoteLine(line) {
+  const match = String(line || '').match(/^(\s{0,3}>\s?)([\s\S]*)$/);
+  if (!match) return line;
+  const image = parseImageSwipeBareRemoteUrlLine(match[2]);
+  if (!image) return line;
+  return `${match[1]}![](${image.src})`;
+}
+
 function renderImageSwipeHtmlBlock(type, blockLines, optionText) {
   const images = collectImageSwipeImages(blockLines);
   if (!images.length) return null;
@@ -953,7 +997,7 @@ function renderImageSwipeHtmlBlock(type, blockLines, optionText) {
 
   return [
     `<section ${attrs.join(' ')}>`,
-    ...images.map((image) => `<img src="${escapeImageSwipeHtmlAttr(image.src)}" alt="${escapeImageSwipeHtmlAttr(image.alt)}">`),
+    ...images.map((image) => renderImageSwipeImgTag(image)),
     '</section>',
   ];
 }
@@ -1022,6 +1066,13 @@ function preprocessImageSwipeCallouts(markdown) {
       originalLines.push(lines[i]);
       blockLines.push(stripSingleQuotePrefix(lines[i]));
       i += 1;
+    }
+
+    if (hasRemoteImageSwipeImage(blockLines)) {
+      output.push(...originalLines.map((line, index) => (
+        index === 0 ? line : normalizeBareRemoteImageSwipeQuoteLine(line)
+      )));
+      continue;
     }
 
     const rendered = renderImageSwipeHtmlBlock(callout.type, blockLines, callout.optionText);

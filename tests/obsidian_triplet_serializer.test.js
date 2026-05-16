@@ -82,6 +82,50 @@ describe('Obsidian Triplet Serializer', () => {
     expect(html).toContain('width:100%');
   });
 
+  it('should preserve remote image-swipe images with no-referrer and Obsidian width hints', () => {
+    const root = document.createElement('div');
+    root.innerHTML = [
+      '<section data-owc-image-swipe="1" data-owc-image-swipe-type="image-swipe">',
+      '<img src="https://cdn.example.com/CleanShot%202026-05-14.png" alt="CleanShot 2026-05-14.png|400">',
+      '</section>',
+    ].join('');
+
+    const html = serializeObsidianRenderedHtml({ root, converter });
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    const img = container.querySelector('img');
+
+    expect(img?.getAttribute('src')).toBe('https://cdn.example.com/CleanShot%202026-05-14.png');
+    expect(img?.getAttribute('width')).toBe('400');
+    expect(img?.getAttribute('referrerpolicy')).toBe('no-referrer');
+    expect(container.textContent).toContain('CleanShot 2026-05-14');
+  });
+
+  it('should convert Obsidian-rendered remote image-swipe callouts into swipe blocks', () => {
+    const root = document.createElement('div');
+    root.innerHTML = [
+      '<div class="callout" data-callout="image-swipe">',
+      '<div class="callout-title"><div class="callout-title-inner">左右滑动图片</div></div>',
+      '<div class="callout-content">',
+      '<p><img src="https://cdn.example.com/CleanShot%202026-05-14.png" alt="CleanShot 2026-05-14.png|400" width="400" referrerpolicy="no-referrer"></p>',
+      '</div>',
+      '</div>',
+    ].join('');
+
+    const html = serializeObsidianRenderedHtml({ root, converter });
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    const img = container.querySelector('img');
+
+    expect(html).toContain('overflow-x:auto');
+    expect(html).toContain('width:100%');
+    expect(html).not.toContain('class="callout"');
+    expect(img?.getAttribute('src')).toBe('https://cdn.example.com/CleanShot%202026-05-14.png');
+    expect(img?.getAttribute('width')).toBe('400');
+    expect(img?.getAttribute('referrerpolicy')).toBe('no-referrer');
+    expect(container.textContent).toContain('左右滑动图片');
+  });
+
   it('should convert image-sensitive sections into warning-first horizontal panels', () => {
     const root = document.createElement('div');
     root.innerHTML = [
