@@ -285,13 +285,13 @@ function getWebSocketOpenState(WebSocketServer) {
 function createReadableBridgeError(error) {
   const message = String(error?.message || error || '');
   if (/Invalid or missing token|MCP token not configured|401|403/i.test(message)) {
-    const friendly = new Error('浏览器插件已响应，但鉴权失败。请在浏览器插件中开启本地服务连接，并确认 Obsidian 与插件使用同一个连接令牌。');
+    const friendly = new Error('浏览器插件已响应，但连接令牌校验失败。请确认 Obsidian 与浏览器插件使用同一个连接令牌。');
     friendly.code = 'AUTH_FAILED';
     friendly.cause = error;
     return friendly;
   }
   if (/Extension not connected|not connected|timeout:no_extension/i.test(message)) {
-    const friendly = new Error('尚未连接到浏览器插件。请在已登录目标平台的 Chromium 浏览器中安装并启用插件，然后开启本地服务连接。');
+    const friendly = new Error('尚未连接到浏览器插件。请确认已在正在运行的 Chromium 浏览器中安装插件，并检查地址、端口和连接令牌。');
     friendly.code = 'EXTENSION_NOT_CONNECTED';
     friendly.cause = error;
     return friendly;
@@ -309,7 +309,7 @@ function createReadableBridgeError(error) {
     return friendly;
   }
   if (/Request timeout: (health|listSupportedPlatforms|enqueueSyncArticle|getSyncTask|getSyncTaskLink|openSyncTask|getAuthSnapshot)/i.test(message)) {
-    const friendly = new Error('浏览器插件响应超时，请确认插件已开启本地服务连接后重试。');
+    const friendly = new Error('浏览器插件响应超时，请确认浏览器正在运行，地址、端口和连接令牌正确后重试。');
     friendly.code = 'BRIDGE_REQUEST_TIMEOUT';
     friendly.cause = error;
     return friendly;

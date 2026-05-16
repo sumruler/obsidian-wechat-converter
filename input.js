@@ -70,6 +70,10 @@ const { stripMarkdownFrontmatter } = require('./services/markdown-utils');
 const APPLE_STYLE_VIEW = 'apple-style-converter';
 const APPLE_STYLE_VIEW_TITLE = 'Obsidian 发布助手';
 const OBSIDIAN_PUBLISHER_PRO_URL = 'https://xiaoweibox.top/obsidian-publisher/pro/';
+const OBSIDIAN_PUBLISHER_GUIDE_URL = 'https://xiaoweibox.top/obsidian-publisher/guide/';
+const OBSIDIAN_PUBLISHER_EXTENSION_GUIDE_URL = `${OBSIDIAN_PUBLISHER_GUIDE_URL}?from=obsidian-plugin#install-extension`;
+const OBSIDIAN_PUBLISHER_BRIDGE_GUIDE_URL = `${OBSIDIAN_PUBLISHER_GUIDE_URL}?from=obsidian-plugin#bridge`;
+const MULTI_PLATFORM_TAB_LABEL = '其他平台（小红书/知乎/抖音等）';
 
 // Pure data helpers extracted to services/wechatsync-settings.js so the
 // views/ layer can normalize / read settings without depending on input.js.
@@ -3697,6 +3701,16 @@ class AppleStyleView extends ItemView {
     return this.openExternalUrl(OBSIDIAN_PUBLISHER_PRO_URL);
   }
 
+  openPublisherGuidePage(section = '') {
+    if (section === 'bridge') {
+      return this.openExternalUrl(OBSIDIAN_PUBLISHER_BRIDGE_GUIDE_URL);
+    }
+    if (section === 'install-extension') {
+      return this.openExternalUrl(OBSIDIAN_PUBLISHER_EXTENSION_GUIDE_URL);
+    }
+    return this.openExternalUrl(OBSIDIAN_PUBLISHER_GUIDE_URL);
+  }
+
   showAccountSetupEmptyState() {
     const { Modal } = require('obsidian');
     if (typeof Modal !== 'function') {
@@ -3815,7 +3829,7 @@ class AppleStyleView extends ItemView {
       cls: `wechat-publish-mode-tab${activeMode === 'wechat' ? ' is-active' : ''}`,
     });
     const multiPlatformTab = publishModeTabs.createEl('button', {
-      text: '其他平台',
+      text: MULTI_PLATFORM_TAB_LABEL,
       cls: `wechat-publish-mode-tab${activeMode === 'multi' ? ' is-active' : ''}`,
     });
     return { wechatTab, multiPlatformTab };
@@ -5584,7 +5598,7 @@ class AppleStyleSettingTab extends PluginSettingTab {
     // === Tab 导航 ===
     const tabBar = containerEl.createDiv({ cls: 'apple-settings-tabs' });
     const wechatTab = tabBar.createDiv({ cls: 'apple-settings-tab active', text: '微信' });
-    const multiTab = tabBar.createDiv({ cls: 'apple-settings-tab', text: '其他平台' });
+    const multiTab = tabBar.createDiv({ cls: 'apple-settings-tab', text: MULTI_PLATFORM_TAB_LABEL });
 
     const wechatContent = containerEl.createDiv({ cls: 'apple-settings-tab-content' });
     const multiContent = containerEl.createDiv({ cls: 'apple-settings-tab-content' });

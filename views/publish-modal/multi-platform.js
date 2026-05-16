@@ -53,6 +53,7 @@ const {
 
 const QUOTA_POLICY = 'truncate';
 const FREE_DAILY_PLATFORM_QUOTA = 3;
+const MODAL_SELECTED_PLATFORM_IDS = '__wechatMultiPlatformSelectedPlatformIds';
 
 function getQuotaHintText(selectedCount = 0) {
   if (selectedCount > FREE_DAILY_PLATFORM_QUOTA) {
@@ -78,6 +79,35 @@ function openPublisherProPage(view) {
     return view.openExternalUrl('https://xiaoweibox.top/obsidian-publisher/pro/');
   }
   return false;
+}
+
+function openPublisherGuidePage(view, section = 'install-extension') {
+  if (typeof view?.openPublisherGuidePage === 'function') {
+    return view.openPublisherGuidePage(section);
+  }
+  if (typeof view?.openExternalUrl === 'function') {
+    const hash = section === 'bridge' ? 'bridge' : 'install-extension';
+    return view.openExternalUrl(`https://xiaoweibox.top/obsidian-publisher/guide/?from=obsidian-plugin#${hash}`);
+  }
+  return false;
+}
+
+function getBridgeSafeSessionCover(cover) {
+  const value = String(cover || '').trim();
+  if (/^(data:image\/|https?:\/\/)/i.test(value)) return value;
+  return '';
+}
+
+function getModalSelectedPlatformIds(modal, defaultSelectedPlatforms) {
+  if (!Array.isArray(modal?.[MODAL_SELECTED_PLATFORM_IDS])) {
+    modal[MODAL_SELECTED_PLATFORM_IDS] = Array.from(defaultSelectedPlatforms);
+  }
+  return new Set(parseWechatsyncPlatformIds(modal[MODAL_SELECTED_PLATFORM_IDS]));
+}
+
+function saveModalSelectedPlatformIds(modal, selectedPlatforms) {
+  if (!modal) return;
+  modal[MODAL_SELECTED_PLATFORM_IDS] = Array.from(selectedPlatforms);
 }
 
 async function detectQuotaPolicySupport(bridge, cachedConnection = {}) {
@@ -137,7 +167,7 @@ async function showMultiPlatformPublishModal(view, options = {}) {
   if (!bridgeSettings.enabled) {
     const disabledHint = modal.contentEl.createDiv({ cls: 'wechat-sync-empty-state' });
     disabledHint.createEl('h3', { text: '尚未启用浏览器插件发布' });
-    disabledHint.createEl('p', { text: '请先在插件设置中开启浏览器插件发布，再回到这里选择其他发布平台。' });
+    disabledHint.createEl('p', { text: '请先安装浏览器插件，再到设置中启用浏览器插件发布、测试连接并选择平台。免费版每天可发布到 3 个平台。' });
     const settingsBtn = disabledHint.createEl('button', { text: '去设置', cls: 'mod-cta' });
     settingsBtn.onclick = () => {
       modal.close();
@@ -145,6 +175,8 @@ async function showMultiPlatformPublishModal(view, options = {}) {
         new Notice('请在设置中打开 Obsidian 发布助手并开启浏览器插件发布');
       }
     };
+    const guideBtn = disabledHint.createEl('button', { text: '安装浏览器插件教程' });
+    guideBtn.onclick = () => openPublisherGuidePage(view, 'install-extension');
     if (shouldOpenModal) modal.open();
     return;
   }
@@ -156,6 +188,7 @@ async function showMultiPlatformPublishModal(view, options = {}) {
   // 只显示插件设置中已勾选的平台
   const displayedPlatforms = availablePlatforms.filter((p) => defaultSelectedPlatforms.has(p.id));
   const isBridgeReady = cachedConnection.status === 'connected';
+  const modalSelectedPlatforms = getModalSelectedPlatformIds(modal, defaultSelectedPlatforms);
 
   {
     const description = describeWechatsyncConnectionState(cachedConnection, { variant: 'modal' });
@@ -208,7 +241,7 @@ async function showMultiPlatformPublishModal(view, options = {}) {
 
     for (const platform of normalizedPlatforms) {
       const authInfo = getWechatsyncPlatformStatusBadge(platform, { bridgeConnected: isBridgeReady });
-      const isSelected = isBridgeReady && defaultSelectedPlatforms.has(platform.id);
+      const isSelected = isBridgeReady && modalSelectedPlatforms.has(platform.id);
       const row = platformListEl.createDiv({
         cls: `wechat-multiplatform-platform ${isSelected ? `${authInfo.cls} is-selected` : ''}`,
       });
@@ -263,6 +296,7 @@ async function showMultiPlatformPublishModal(view, options = {}) {
           row.classList?.remove('is-selected');
           setStatusVisible(false);
         }
+        saveModalSelectedPlatformIds(modal, selectedPlatforms);
         updateSyncButtonState();
       };
     }
@@ -285,7 +319,7 @@ async function showMultiPlatformPublishModal(view, options = {}) {
     const rawMarkdown = stripMarkdownFrontmatter(view.lastResolvedMarkdown || '');
     const exportHtml = view.getCurrentExportHtml() || view.currentHtml || '';
     const publishMeta = view.getFrontmatterPublishMeta(activeFile);
-    const rawCover = view.sessionCoverBase64 || publishMeta.cover || '';
+    const rawCover = getBridgeSafeSessionCover(view.sessionCoverBase64) || publishMeta.cover || '';
     const notice = new Notice('正在准备并发送到浏览器插件...', 0);
     syncBtn.disabled = true;
     syncBtn.addClass?.('apple-btn-disabled');

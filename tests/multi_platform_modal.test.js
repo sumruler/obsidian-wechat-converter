@@ -147,6 +147,36 @@ describe('AppleStyleView - showMultiPlatformSyncModal platform rows', () => {
     expect(row.classList.contains('is-ok')).toBe(true);
   });
 
+  it('keeps temporary platform choices when returning to the tab inside the same modal', async () => {
+    const cachedPlatforms = [
+      { id: 'zhihu', name: '知乎', authKnown: true, authenticated: true },
+      { id: 'juejin', name: '掘金', authKnown: true, authenticated: true },
+      { id: 'csdn', name: 'CSDN', authKnown: true, authenticated: true },
+    ];
+    const view = makeView({
+      selectedPlatforms: ['zhihu', 'juejin', 'csdn'],
+      cachedPlatforms,
+    });
+    await view.showMultiPlatformSyncModal();
+    const modal = modalCapture.getLastModal();
+
+    const juejinRow = findRow(modal, 'juejin');
+    const juejinCheckbox = juejinRow.querySelector('input[type="checkbox"]');
+    juejinCheckbox.checked = false;
+    juejinCheckbox.dispatchEvent(new Event('change'));
+
+    await view.showMultiPlatformSyncModal({ modal });
+
+    const returnedZhihu = findRow(modal, 'zhihu').querySelector('input[type="checkbox"]');
+    const returnedJuejin = findRow(modal, 'juejin').querySelector('input[type="checkbox"]');
+    const returnedCsdn = findRow(modal, 'csdn').querySelector('input[type="checkbox"]');
+
+    expect(returnedZhihu.checked).toBe(true);
+    expect(returnedJuejin.checked).toBe(false);
+    expect(returnedCsdn.checked).toBe(true);
+    expect(findRow(modal, 'juejin').classList.contains('is-selected')).toBe(false);
+  });
+
   it('hides bridge-not-enabled empty state when enabled', async () => {
     const view = makeView({ selectedPlatforms: ['zhihu'] });
     await view.showMultiPlatformSyncModal();
@@ -360,6 +390,58 @@ describe('AppleStyleView - showMultiPlatformSyncModal platform rows', () => {
         expect.objectContaining({
           id: 'image-1',
           filename: 'cover.png',
+        }),
+      ],
+    }));
+  });
+
+  it('ignores app resource session cover and resolves the original frontmatter cover path', async () => {
+    const imageFile = {
+      path: 'Wechat/published/img/cover-combined.jpg',
+      name: 'cover-combined.jpg',
+      extension: 'jpg',
+      bytes: Buffer.from([0xff, 0xd8, 0xff, 0x00, 9, 10]),
+    };
+    const app = {
+      isMobile: false,
+      metadataCache: {
+        getFirstLinkpathDest: vi.fn((linkpath) => (
+          linkpath === 'Wechat/published/img/cover-combined.jpg' ? imageFile : null
+        )),
+      },
+      vault: {
+        readBinary: vi.fn(async () => imageFile.bytes),
+        getResourcePath: vi.fn(() => 'app://local/Users/demo/Vault/Wechat/published/img/cover-combined.jpg?123'),
+        getAbstractFileByPath: vi.fn(() => null),
+      },
+    };
+    const bridge = {
+      health: vi.fn().mockResolvedValue({ ok: true, capabilities: { quotaPolicy: true } }),
+      enqueueSyncArticle: vi.fn().mockResolvedValue({ accepted: true, syncId: 'sync-1' }),
+    };
+    const view = makeView({ selectedPlatforms: ['zhihu'], bridge, app });
+    view.sessionCoverBase64 = 'app://local/Users/demo/Vault/Wechat/published/img/cover-combined.jpg?123';
+    view.lastResolvedMarkdown = '正文';
+    view.getFrontmatterPublishMeta = vi.fn(() => ({
+      cover: 'Wechat/published/img/cover-combined.jpg',
+      coverSrc: 'app://local/Users/demo/Vault/Wechat/published/img/cover-combined.jpg?123',
+    }));
+    view.prepareHtmlForWechatsyncArticle = vi.fn(async (html) => html);
+    view.showWechatsyncEnqueueAcceptedModal = vi.fn();
+
+    await view.showMultiPlatformSyncModal();
+    const modal = modalCapture.getLastModal();
+    const syncBtn = modal.contentEl.querySelector('.wechat-modal-buttons .mod-cta');
+
+    await syncBtn.onclick();
+
+    expect(bridge.enqueueSyncArticle).toHaveBeenCalledWith(expect.objectContaining({
+      cover: 'asset://image-1',
+      assets: [
+        expect.objectContaining({
+          id: 'image-1',
+          filename: 'cover-combined.jpg',
+          mimeType: 'image/jpeg',
         }),
       ],
     }));

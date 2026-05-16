@@ -2332,6 +2332,42 @@ input[type="range"].apple-slider:active::-webkit-slider-thumb {
   font-family: var(--apple-font-text);
 }
 
+.wechat-multiplatform-onboarding {
+  margin: 10px 0 16px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--apple-accent) 28%, var(--apple-border));
+  border-radius: var(--apple-radius-lg, 12px);
+  background: color-mix(in srgb, var(--apple-accent) 5%, var(--apple-surface));
+  font-family: var(--apple-font-text);
+}
+
+.wechat-multiplatform-onboarding-title {
+  color: var(--apple-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.wechat-multiplatform-onboarding p {
+  margin: 5px 0 0;
+  color: var(--apple-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.wechat-multiplatform-onboarding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.wechat-multiplatform-onboarding-actions button {
+  padding: 5px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .wechat-platform-picker-header {
   display: flex;
   align-items: flex-start;
