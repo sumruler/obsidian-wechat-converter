@@ -11143,18 +11143,34 @@ var require_wechatsync_bridge = __commonJS({
 // services/wechatsync-results.js
 var require_wechatsync_results = __commonJS({
   "services/wechatsync-results.js"(exports2, module2) {
+    var FEATURED_WECHATSYNC_PLATFORM_ORDER = [
+      "xiaohongshu",
+      "zhihu",
+      "weibo",
+      "douyin",
+      "toutiao",
+      "bilibili",
+      "csdn",
+      "yuque",
+      "jianshu",
+      "smzdm"
+    ];
+    var FEATURED_WECHATSYNC_PLATFORM_RANK = new Map(
+      FEATURED_WECHATSYNC_PLATFORM_ORDER.map((id, index) => [id, index])
+    );
     var FALLBACK_WECHATSYNC_PLATFORMS = [
+      { id: "xiaohongshu", name: "\u5C0F\u7EA2\u4E66", homepage: "https://creator.xiaohongshu.com/publish/publish?from=menu&target=article", capabilities: ["article", "draft", "image_upload"] },
       { id: "zhihu", name: "\u77E5\u4E4E", homepage: "https://www.zhihu.com", capabilities: ["article", "draft", "image_upload", "tags", "cover"] },
       { id: "weibo", name: "\u5FAE\u535A", homepage: "https://card.weibo.com/article/v5/editor", capabilities: ["article", "draft", "image_upload", "cover"] },
-      { id: "xiaohongshu", name: "\u5C0F\u7EA2\u4E66", homepage: "https://creator.xiaohongshu.com/publish/publish?from=menu&target=article", capabilities: ["article", "draft", "image_upload"] },
-      { id: "juejin", name: "\u6398\u91D1", homepage: "https://juejin.cn", capabilities: ["article", "draft", "image_upload", "categories", "tags", "cover"] },
-      { id: "csdn", name: "CSDN", homepage: "https://editor.csdn.net/md/", capabilities: ["article", "draft", "image_upload"] },
-      { id: "jianshu", name: "\u7B80\u4E66", homepage: "https://www.jianshu.com", capabilities: ["article", "draft", "image_upload", "categories"] },
-      { id: "toutiao", name: "\u5934\u6761\u53F7", homepage: "https://mp.toutiao.com/profile_v4/graphic/publish", capabilities: ["article", "draft", "image_upload", "cover"] },
       { id: "douyin", name: "\u6296\u97F3\u56FE\u6587", homepage: "https://creator.douyin.com", capabilities: ["article", "draft", "image_upload"] },
+      { id: "toutiao", name: "\u5934\u6761\u53F7", homepage: "https://mp.toutiao.com/profile_v4/graphic/publish", capabilities: ["article", "draft", "image_upload", "cover"] },
       { id: "bilibili", name: "B\u7AD9\u4E13\u680F", homepage: "https://member.bilibili.com/platform/upload/text", capabilities: ["article", "draft", "image_upload"] },
-      { id: "baijiahao", name: "\u767E\u5BB6\u53F7", homepage: "https://baijiahao.baidu.com/", capabilities: ["article", "draft", "image_upload"] },
+      { id: "csdn", name: "CSDN", homepage: "https://editor.csdn.net/md/", capabilities: ["article", "draft", "image_upload"] },
       { id: "yuque", name: "\u8BED\u96C0", homepage: "https://www.yuque.com/dashboard", capabilities: ["article", "draft", "image_upload"] },
+      { id: "jianshu", name: "\u7B80\u4E66", homepage: "https://www.jianshu.com", capabilities: ["article", "draft", "image_upload", "categories"] },
+      { id: "smzdm", name: "\u4EC0\u4E48\u503C\u5F97\u4E70", homepage: "https://post.smzdm.com/tougao/", capabilities: ["article", "draft", "image_upload"] },
+      { id: "juejin", name: "\u6398\u91D1", homepage: "https://juejin.cn", capabilities: ["article", "draft", "image_upload", "categories", "tags", "cover"] },
+      { id: "baijiahao", name: "\u767E\u5BB6\u53F7", homepage: "https://baijiahao.baidu.com/", capabilities: ["article", "draft", "image_upload"] },
       { id: "douban", name: "\u8C46\u74E3", homepage: "https://www.douban.com/note/create", capabilities: ["article", "draft", "image_upload"] },
       { id: "sohu", name: "\u641C\u72D0\u53F7", homepage: "https://mp.sohu.com/mpfe/v3/main/first/page?newsType=1", capabilities: ["article", "draft", "image_upload"] },
       { id: "xueqiu", name: "\u96EA\u7403", homepage: "https://mp.xueqiu.com/writeV2", capabilities: ["article", "draft", "image_upload"] },
@@ -11169,7 +11185,6 @@ var require_wechatsync_results = __commonJS({
       { id: "sohufocus", name: "\u641C\u72D0\u7126\u70B9", homepage: "https://mp.focus.cn/fe/index.html#/info/draft", capabilities: ["article", "draft", "image_upload"] },
       { id: "x", name: "X (Twitter)", homepage: "https://x.com/compose/articles", capabilities: ["article", "draft", "image_upload"] },
       { id: "eastmoney", name: "\u4E1C\u65B9\u8D22\u5BCC", homepage: "https://mp.eastmoney.com", capabilities: ["article", "draft", "image_upload", "cover"] },
-      { id: "smzdm", name: "\u4EC0\u4E48\u503C\u5F97\u4E70", homepage: "https://post.smzdm.com/tougao/", capabilities: ["article", "draft", "image_upload"] },
       { id: "netease", name: "\u7F51\u6613\u53F7", homepage: "https://mp.163.com/#/article-publish", capabilities: ["article", "draft", "image_upload"] },
       { id: "wordpress", name: "WordPress", homepage: "", capabilities: ["article", "draft", "image_upload"] },
       { id: "typecho", name: "Typecho", homepage: "", capabilities: ["article", "draft", "image_upload"] },
@@ -11248,6 +11263,45 @@ var require_wechatsync_results = __commonJS({
       }
       return { status: "unknown", text: "\u672A\u68C0\u6D4B", cls: "is-unknown" };
     }
+    function getWechatsyncPlatformIdFromItem(item = {}) {
+      return String((item == null ? void 0 : item.id) || (item == null ? void 0 : item.platform) || (item == null ? void 0 : item.type) || item || "").trim();
+    }
+    function getWechatsyncPlatformSortRank(platformId = "") {
+      return FEATURED_WECHATSYNC_PLATFORM_RANK.has(platformId) ? FEATURED_WECHATSYNC_PLATFORM_RANK.get(platformId) : FEATURED_WECHATSYNC_PLATFORM_ORDER.length + 1e3;
+    }
+    function isWechatsyncPlatformAuthenticated(platform = {}, bridgeConnected = true) {
+      if (bridgeConnected === false)
+        return false;
+      const status = getWechatsyncPlatformStatus(platform, { bridgeConnected });
+      return status === "available" || (platform == null ? void 0 : platform.authenticated) === true;
+    }
+    function sortWechatsyncPlatformItemsForDisplay2(items = [], options = {}) {
+      const {
+        bridgeConnected = true,
+        authenticatedFirst = bridgeConnected !== false,
+        getPlatformId = getWechatsyncPlatformIdFromItem,
+        getPlatform = (item) => item
+      } = options;
+      return (Array.isArray(items) ? items : []).map((item, originalIndex) => ({ item, originalIndex })).sort((a, b) => {
+        const aPlatform = getPlatform(a.item) || {};
+        const bPlatform = getPlatform(b.item) || {};
+        if (authenticatedFirst) {
+          const authDiff = Number(isWechatsyncPlatformAuthenticated(bPlatform, bridgeConnected)) - Number(isWechatsyncPlatformAuthenticated(aPlatform, bridgeConnected));
+          if (authDiff !== 0)
+            return authDiff;
+        }
+        const aRank = getWechatsyncPlatformSortRank(getPlatformId(a.item));
+        const bRank = getWechatsyncPlatformSortRank(getPlatformId(b.item));
+        return aRank - bRank || a.originalIndex - b.originalIndex;
+      }).map(({ item }) => item);
+    }
+    function sortWechatsyncPlatformsForDisplay(platforms = [], options = {}) {
+      return sortWechatsyncPlatformItemsForDisplay2(platforms, {
+        ...options,
+        getPlatformId: (platform) => platform == null ? void 0 : platform.id,
+        getPlatform: (platform) => platform
+      });
+    }
     function buildWechatsyncPlatformCatalog2(options = {}) {
       var _a;
       const {
@@ -11283,7 +11337,10 @@ var require_wechatsync_results = __commonJS({
           catalog.push(auth);
         }
       }
-      return catalog;
+      return sortWechatsyncPlatformsForDisplay(catalog, {
+        bridgeConnected,
+        authenticatedFirst: bridgeConnected
+      });
     }
     function normalizeWechatsyncCheckAuthResult(candidate = {}, auth = {}) {
       const error = typeof (auth == null ? void 0 : auth.error) === "string" ? auth.error : "";
@@ -11458,6 +11515,7 @@ var require_wechatsync_results = __commonJS({
       return Array.from(byId.values());
     }
     module2.exports = {
+      FEATURED_WECHATSYNC_PLATFORM_ORDER,
       buildWechatsyncPlatformCatalog: buildWechatsyncPlatformCatalog2,
       getFallbackWechatsyncPlatforms: getFallbackWechatsyncPlatforms2,
       getMultiPlatformResultSummary: getMultiPlatformResultSummary2,
@@ -11475,6 +11533,8 @@ var require_wechatsync_results = __commonJS({
       normalizeWechatsyncPlatformList: normalizeWechatsyncPlatformList2,
       normalizeWechatsyncPlatform: normalizeWechatsyncPlatform2,
       probeWechatsyncPlatformsIndividually: probeWechatsyncPlatformsIndividually2,
+      sortWechatsyncPlatformItemsForDisplay: sortWechatsyncPlatformItemsForDisplay2,
+      sortWechatsyncPlatformsForDisplay,
       summarizeWechatsyncPlatformResponse: summarizeWechatsyncPlatformResponse2,
       updateCachedPlatformsAfterSync: updateCachedPlatformsAfterSync2
     };
@@ -14251,6 +14311,7 @@ var {
   normalizeWechatsyncPlatform,
   normalizeWechatsyncPlatformList,
   probeWechatsyncPlatformsIndividually,
+  sortWechatsyncPlatformItemsForDisplay,
   summarizeWechatsyncPlatformResponse,
   updateCachedPlatformsAfterSync
 } = require_wechatsync_results();
@@ -17869,11 +17930,24 @@ var AppleStyleView = class extends ItemView {
     const summary = modal.contentEl.createDiv({
       cls: `wechat-multiplatform-result-summary ${skippedPlatformIds.length ? "is-warning" : "is-success"}`
     });
-    const platformById = new Map(
-      getConfiguredWechatsyncPlatforms(this.plugin.settings.multiPlatformSync).map((platform) => [platform.id, platform])
-    );
+    const multiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const platformCatalog = getAvailableWechatsyncPlatforms(multiPlatformSettings);
+    const platformById = new Map(platformCatalog.map((platform) => [platform.id, platform]));
+    const sortPlatformItems = (items = [], getId = (item) => item) => {
+      var _a2;
+      return sortWechatsyncPlatformItemsForDisplay(items, {
+        bridgeConnected: ((_a2 = multiPlatformSettings.connection) == null ? void 0 : _a2.status) === "connected",
+        getPlatformId: getId,
+        getPlatform: (item) => {
+          const id = getId(item);
+          return platformById.get(id) || normalizeWechatsyncPlatform(
+            item && typeof item === "object" ? { ...item, id } : { id }
+          ) || { id };
+        }
+      });
+    };
     const formatPlatformNames = (ids = []) => {
-      const names = parseWechatsyncPlatformIds(ids).map((id) => {
+      const names = sortPlatformItems(parseWechatsyncPlatformIds(ids)).map((id) => {
         var _a2;
         return ((_a2 = platformById.get(id)) == null ? void 0 : _a2.name) || id;
       }).filter(Boolean);
@@ -17888,7 +17962,7 @@ var AppleStyleView = class extends ItemView {
     });
     const list = modal.contentEl.createDiv({ cls: "wechat-multiplatform-result-list" });
     const rawTaskPlatforms = Array.isArray(task == null ? void 0 : task.platforms) && task.platforms.length ? task.platforms : (publishedPlatformIds.length ? publishedPlatformIds : platforms).map((id) => ({ id, status: "queued" }));
-    const taskPlatforms = rawTaskPlatforms.filter((item) => {
+    const taskPlatforms = sortPlatformItems(rawTaskPlatforms.filter((item) => {
       const platformId = parseWechatsyncPlatformIds([(item == null ? void 0 : item.id) || (item == null ? void 0 : item.platform) || item])[0] || "";
       if (!platformId)
         return false;
@@ -17898,7 +17972,7 @@ var AppleStyleView = class extends ItemView {
         return publishedPlatformSet.has(platformId);
       }
       return true;
-    });
+    }), (item) => parseWechatsyncPlatformIds([(item == null ? void 0 : item.id) || (item == null ? void 0 : item.platform) || item])[0] || "");
     if (taskId) {
       const taskRow = list.createDiv({ cls: "wechat-multiplatform-result-row" });
       taskRow.createEl("div", { text: "\u4EFB\u52A1", cls: "wechat-multiplatform-result-pill is-success" });
@@ -17934,7 +18008,7 @@ var AppleStyleView = class extends ItemView {
         cls: "wechat-multiplatform-result-detail"
       });
     }
-    for (const platformId of skippedPlatformIds) {
+    for (const platformId of sortPlatformItems(skippedPlatformIds)) {
       const platformName = ((_g = platformById.get(platformId)) == null ? void 0 : _g.name) || platformId;
       const row = list.createDiv({ cls: "wechat-multiplatform-result-row is-warning" });
       row.createEl("div", {
@@ -17966,14 +18040,22 @@ var AppleStyleView = class extends ItemView {
   showMultiPlatformQuotaBlockedModal({ quotaResult = {}, requestedPlatformIds = [] } = {}) {
     var _a, _b, _c, _d, _e;
     const { Modal } = require("obsidian");
-    const platformById = new Map(
-      getConfiguredWechatsyncPlatforms(this.plugin.settings.multiPlatformSync).map((platform) => [platform.id, platform])
-    );
+    const multiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const platformCatalog = getAvailableWechatsyncPlatforms(multiPlatformSettings);
+    const platformById = new Map(platformCatalog.map((platform) => [platform.id, platform]));
+    const sortPlatformIds = (ids = []) => {
+      var _a2;
+      return sortWechatsyncPlatformItemsForDisplay(parseWechatsyncPlatformIds(ids), {
+        bridgeConnected: ((_a2 = multiPlatformSettings.connection) == null ? void 0 : _a2.status) === "connected",
+        getPlatformId: (id) => id,
+        getPlatform: (id) => platformById.get(id) || { id }
+      });
+    };
     const skippedPlatformIds = parseWechatsyncPlatformIds(
       ((_a = quotaResult == null ? void 0 : quotaResult.skippedPlatforms) == null ? void 0 : _a.length) ? quotaResult.skippedPlatforms : requestedPlatformIds
     );
     const formatPlatformNames = (ids = []) => {
-      const names = parseWechatsyncPlatformIds(ids).map((id) => {
+      const names = sortPlatformIds(ids).map((id) => {
         var _a2;
         return ((_a2 = platformById.get(id)) == null ? void 0 : _a2.name) || id;
       }).filter(Boolean);
@@ -18013,7 +18095,7 @@ var AppleStyleView = class extends ItemView {
     modal.open();
   }
   showMultiPlatformSyncResultModal({ results = [], requestedPlatformIds = [], fatalError = null } = {}) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f;
     const { Modal } = require("obsidian");
     if (typeof Modal !== "function") {
       const message = fatalError ? `\u6D4F\u89C8\u5668\u63D2\u4EF6\u540C\u6B65\u5931\u8D25\uFF1A${fatalError.message || fatalError}` : "\u540C\u6B65\u5B8C\u6210\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u4E2D\u67E5\u770B\u7ED3\u679C";
@@ -18023,9 +18105,8 @@ var AppleStyleView = class extends ItemView {
     const modal = new Modal(this.app);
     const mobileSync = isMobileClient(this.app);
     const bridgeSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
-    const platformById = new Map(
-      (bridgeSettings.connection.platforms || []).map((platform) => normalizeWechatsyncPlatform(platform)).filter(Boolean).map((platform) => [platform.id, platform])
-    );
+    const platformCatalog = getAvailableWechatsyncPlatforms(bridgeSettings);
+    const platformById = new Map(platformCatalog.map((platform) => [platform.id, platform]));
     const {
       normalizedResults,
       successCount,
@@ -18076,7 +18157,15 @@ var AppleStyleView = class extends ItemView {
         cls: "wechat-multiplatform-result-detail"
       });
     } else {
-      for (const result of normalizedResults) {
+      const sortedResults = sortWechatsyncPlatformItemsForDisplay(normalizedResults, {
+        bridgeConnected: ((_f = bridgeSettings.connection) == null ? void 0 : _f.status) === "connected",
+        getPlatformId: (result) => getWechatSyncResultPlatformId(result),
+        getPlatform: (result) => {
+          const id = getWechatSyncResultPlatformId(result);
+          return platformById.get(id) || normalizeWechatsyncPlatform({ ...result, id }) || { id };
+        }
+      });
+      for (const result of sortedResults) {
         const draftUrl = getWechatSyncResultUrl(result);
         const errorMessage = getWechatSyncResultError(result);
         const isSuccess = (result == null ? void 0 : result.success) === true;

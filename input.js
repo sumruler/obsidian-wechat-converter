@@ -56,6 +56,7 @@ const {
   normalizeWechatsyncPlatform,
   normalizeWechatsyncPlatformList,
   probeWechatsyncPlatformsIndividually,
+  sortWechatsyncPlatformItemsForDisplay,
   summarizeWechatsyncPlatformResponse,
   updateCachedPlatformsAfterSync,
 } = require('./services/wechatsync-results');
@@ -4193,12 +4194,21 @@ class AppleStyleView extends ItemView {
     const summary = modal.contentEl.createDiv({
       cls: `wechat-multiplatform-result-summary ${skippedPlatformIds.length ? 'is-warning' : 'is-success'}`,
     });
-    const platformById = new Map(
-      getConfiguredWechatsyncPlatforms(this.plugin.settings.multiPlatformSync)
-        .map((platform) => [platform.id, platform])
-    );
+    const multiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const platformCatalog = getAvailableWechatsyncPlatforms(multiPlatformSettings);
+    const platformById = new Map(platformCatalog.map((platform) => [platform.id, platform]));
+    const sortPlatformItems = (items = [], getId = (item) => item) => sortWechatsyncPlatformItemsForDisplay(items, {
+      bridgeConnected: multiPlatformSettings.connection?.status === 'connected',
+      getPlatformId: getId,
+      getPlatform: (item) => {
+        const id = getId(item);
+        return platformById.get(id) || normalizeWechatsyncPlatform(
+          item && typeof item === 'object' ? { ...item, id } : { id }
+        ) || { id };
+      },
+    });
     const formatPlatformNames = (ids = []) => {
-      const names = parseWechatsyncPlatformIds(ids)
+      const names = sortPlatformItems(parseWechatsyncPlatformIds(ids))
         .map((id) => platformById.get(id)?.name || id)
         .filter(Boolean);
       return names.length ? names.join('、') : '无';
@@ -4219,7 +4229,7 @@ class AppleStyleView extends ItemView {
     const rawTaskPlatforms = Array.isArray(task?.platforms) && task.platforms.length
       ? task.platforms
       : (publishedPlatformIds.length ? publishedPlatformIds : platforms).map((id) => ({ id, status: 'queued' }));
-    const taskPlatforms = rawTaskPlatforms.filter((item) => {
+    const taskPlatforms = sortPlatformItems(rawTaskPlatforms.filter((item) => {
       const platformId = parseWechatsyncPlatformIds([item?.id || item?.platform || item])[0] || '';
       if (!platformId) return false;
       if (skippedPlatformSet.has(platformId)) return false;
@@ -4227,7 +4237,7 @@ class AppleStyleView extends ItemView {
         return publishedPlatformSet.has(platformId);
       }
       return true;
-    });
+    }), (item) => parseWechatsyncPlatformIds([item?.id || item?.platform || item])[0] || '');
 
     if (taskId) {
       const taskRow = list.createDiv({ cls: 'wechat-multiplatform-result-row' });
@@ -4269,7 +4279,7 @@ class AppleStyleView extends ItemView {
       });
     }
 
-    for (const platformId of skippedPlatformIds) {
+    for (const platformId of sortPlatformItems(skippedPlatformIds)) {
       const platformName = platformById.get(platformId)?.name || platformId;
       const row = list.createDiv({ cls: 'wechat-multiplatform-result-row is-warning' });
       row.createEl('div', {
@@ -4302,15 +4312,19 @@ class AppleStyleView extends ItemView {
 
   showMultiPlatformQuotaBlockedModal({ quotaResult = {}, requestedPlatformIds = [] } = {}) {
     const { Modal } = require('obsidian');
-    const platformById = new Map(
-      getConfiguredWechatsyncPlatforms(this.plugin.settings.multiPlatformSync)
-        .map((platform) => [platform.id, platform])
-    );
+    const multiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const platformCatalog = getAvailableWechatsyncPlatforms(multiPlatformSettings);
+    const platformById = new Map(platformCatalog.map((platform) => [platform.id, platform]));
+    const sortPlatformIds = (ids = []) => sortWechatsyncPlatformItemsForDisplay(parseWechatsyncPlatformIds(ids), {
+      bridgeConnected: multiPlatformSettings.connection?.status === 'connected',
+      getPlatformId: (id) => id,
+      getPlatform: (id) => platformById.get(id) || { id },
+    });
     const skippedPlatformIds = parseWechatsyncPlatformIds(
       quotaResult?.skippedPlatforms?.length ? quotaResult.skippedPlatforms : requestedPlatformIds
     );
     const formatPlatformNames = (ids = []) => {
-      const names = parseWechatsyncPlatformIds(ids)
+      const names = sortPlatformIds(ids)
         .map((id) => platformById.get(id)?.name || id)
         .filter(Boolean);
       return names.length ? names.join('、') : '无';
@@ -4371,12 +4385,8 @@ class AppleStyleView extends ItemView {
     const modal = new Modal(this.app);
     const mobileSync = isMobileClient(this.app);
     const bridgeSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
-    const platformById = new Map(
-      (bridgeSettings.connection.platforms || [])
-        .map((platform) => normalizeWechatsyncPlatform(platform))
-        .filter(Boolean)
-        .map((platform) => [platform.id, platform])
-    );
+    const platformCatalog = getAvailableWechatsyncPlatforms(bridgeSettings);
+    const platformById = new Map(platformCatalog.map((platform) => [platform.id, platform]));
     const {
       normalizedResults,
       successCount,
@@ -4441,7 +4451,15 @@ class AppleStyleView extends ItemView {
         cls: 'wechat-multiplatform-result-detail',
       });
     } else {
-      for (const result of normalizedResults) {
+      const sortedResults = sortWechatsyncPlatformItemsForDisplay(normalizedResults, {
+        bridgeConnected: bridgeSettings.connection?.status === 'connected',
+        getPlatformId: (result) => getWechatSyncResultPlatformId(result),
+        getPlatform: (result) => {
+          const id = getWechatSyncResultPlatformId(result);
+          return platformById.get(id) || normalizeWechatsyncPlatform({ ...result, id }) || { id };
+        },
+      });
+      for (const result of sortedResults) {
         const draftUrl = getWechatSyncResultUrl(result);
         const errorMessage = getWechatSyncResultError(result);
         const isSuccess = result?.success === true;

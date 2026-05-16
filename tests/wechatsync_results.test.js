@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  FEATURED_WECHATSYNC_PLATFORM_ORDER,
   buildWechatsyncPlatformCatalog,
   getMultiPlatformResultSummary,
   getWechatSyncResultUrl,
@@ -11,6 +12,7 @@ import {
   normalizeWechatsyncPlatformList,
   normalizeWechatsyncPlatform,
   probeWechatsyncPlatformsIndividually,
+  sortWechatsyncPlatformItemsForDisplay,
   summarizeWechatsyncPlatformResponse,
   updateCachedPlatformsAfterSync,
 } from '../services/wechatsync-results.js';
@@ -233,6 +235,9 @@ describe('Wechatsync result helpers', () => {
   it('keeps fallback platform candidates aligned with the Wechatsync support matrix', () => {
     const platforms = getFallbackWechatsyncPlatforms();
     const platformIds = platforms.map((platform) => platform.id);
+    expect(platformIds.slice(0, FEATURED_WECHATSYNC_PLATFORM_ORDER.length)).toEqual(
+      FEATURED_WECHATSYNC_PLATFORM_ORDER
+    );
     expect(platformIds).toContain('zhihu');
     expect(platformIds).toContain('xiaohongshu');
     expect(platformIds).toContain('toutiao');
@@ -252,6 +257,8 @@ describe('Wechatsync result helpers', () => {
     });
 
     expect(catalog.length).toBeGreaterThan(0);
+    expect(catalog.slice(0, FEATURED_WECHATSYNC_PLATFORM_ORDER.length).map((platform) => platform.id))
+      .toEqual(FEATURED_WECHATSYNC_PLATFORM_ORDER);
     expect(catalog[0]).toMatchObject({
       authStatus: 'bridge_required',
       authKnown: true,
@@ -294,6 +301,62 @@ describe('Wechatsync result helpers', () => {
       status: 'unknown',
       text: '未检测',
     });
+  });
+
+  it('groups connected catalog by authenticated state, then featured platform order', () => {
+    const catalog = buildWechatsyncPlatformCatalog({
+      supportedPlatforms: [
+        { id: 'douban', name: '豆瓣' },
+        { id: 'csdn', name: 'CSDN' },
+        { id: 'xiaohongshu', name: '小红书' },
+        { id: 'zhihu', name: '知乎' },
+        { id: 'smzdm', name: '什么值得买' },
+        { id: 'weibo', name: '微博' },
+      ],
+      authSnapshotPlatforms: [
+        { id: 'douban', name: '豆瓣', authKnown: true, authenticated: true },
+        { id: 'zhihu', name: '知乎', authKnown: true, authenticated: true },
+        { id: 'weibo', name: '微博', authKnown: true, authenticated: false },
+      ],
+      bridgeConnected: true,
+    });
+
+    expect(catalog.map((platform) => platform.id)).toEqual([
+      'zhihu',
+      'douban',
+      'xiaohongshu',
+      'weibo',
+      'csdn',
+      'smzdm',
+    ]);
+  });
+
+  it('sorts arbitrary platform result items with the same display rule', () => {
+    const platformById = new Map([
+      ['douban', { id: 'douban', authenticated: true }],
+      ['zhihu', { id: 'zhihu', authenticated: false }],
+      ['xiaohongshu', { id: 'xiaohongshu', authenticated: false }],
+      ['weibo', { id: 'weibo', authenticated: true }],
+    ]);
+    const items = [
+      { platform: 'zhihu' },
+      { platform: 'douban' },
+      { platform: 'xiaohongshu' },
+      { platform: 'weibo' },
+    ];
+
+    const sorted = sortWechatsyncPlatformItemsForDisplay(items, {
+      bridgeConnected: true,
+      getPlatformId: (item) => item.platform,
+      getPlatform: (item) => platformById.get(item.platform) || item,
+    });
+
+    expect(sorted.map((item) => item.platform)).toEqual([
+      'weibo',
+      'douban',
+      'xiaohongshu',
+      'zhihu',
+    ]);
   });
 
   it('normalizes sync responses from arrays, wrapped results, and single results', () => {

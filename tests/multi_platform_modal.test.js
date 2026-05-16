@@ -118,6 +118,25 @@ describe('AppleStyleView - showMultiPlatformSyncModal platform rows', () => {
     expect(row.classList.contains('is-ok')).toBe(true);
   });
 
+  it('orders displayed platforms by authenticated state and featured platform order', async () => {
+    const view = makeView({
+      selectedPlatforms: ['xiaohongshu', 'zhihu', 'weibo', 'douban'],
+      cachedPlatforms: [
+        { id: 'douban', name: '豆瓣', authKnown: true, authenticated: true },
+        { id: 'xiaohongshu', name: '小红书', authKnown: true, authenticated: false },
+        { id: 'zhihu', name: '知乎', authKnown: true, authenticated: false },
+        { id: 'weibo', name: '微博', authKnown: true, authenticated: true },
+      ],
+    });
+
+    await view.showMultiPlatformSyncModal();
+    const modal = modalCapture.getLastModal();
+    const rowIds = Array.from(modal.contentEl.querySelectorAll('.wechat-multiplatform-platform input'))
+      .map((input) => input.value);
+
+    expect(rowIds).toEqual(['weibo', 'douban', 'xiaohongshu', 'zhihu']);
+  });
+
   it('login_required row gets is-error class when selected', async () => {
     const view = makeView({ selectedPlatforms: ['juejin'] });
     await view.showMultiPlatformSyncModal();
