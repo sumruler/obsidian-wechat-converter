@@ -7,6 +7,9 @@ import {
   HELLO_ERROR_TIMEOUT,
   HELLO_ERROR_TOKEN_MISMATCH,
   HELLO_ERROR_VERSION_UNSUPPORTED,
+  HELLO_ERROR_DUPLICATE_SESSION,
+  HELLO_ERROR_TOO_MANY_CLIENTS,
+  DEFAULT_MAX_CLIENTS,
   createReadableBridgeError,
   createWechatSyncBridgeService,
   isOriginAllowedForWebSocket,
@@ -1083,7 +1086,7 @@ describe('§3.1 / §3.2 extension_hello handshake', () => {
     await expect(service.health({ timeoutMs: 500 })).resolves.toMatchObject({ ok: true });
   });
 
-  it('emits a replacement_authenticated audit log when a new hello takes over and closes the previous client', async () => {
+  it('accepts two clients with different extensionInstanceIds simultaneously', async () => {
     const port = await getFreePort();
     const auditEvents = [];
     const service = createWechatSyncBridgeService({
@@ -1115,20 +1118,22 @@ describe('§3.1 / §3.2 extension_hello handshake', () => {
     });
     cleanup.push(second);
 
-    // Wait for the old socket to be closed by the bridge.
-    await waitForSocketClose(first, 1000);
+    await new Promise((r) => setTimeout(r, 100));
 
-    const secondDescriptor = service.getActiveClientDescriptor();
-    expect(secondDescriptor.extensionInstanceId).toBe('ext-B');
-    expect(secondDescriptor.connectionId).not.toBe(firstDescriptor.connectionId);
+    // ext-A socket must NOT have been closed by the bridge.
+    expect(first.readyState).toBe(first.OPEN);
 
-    const replacement = auditEvents.find((entry) => /replacement_authenticated/.test(entry.event));
-    expect(replacement).toBeDefined();
-    expect(replacement.details).toMatchObject({
-      old_extensionInstanceId: 'ext-A',
-      new_extensionInstanceId: 'ext-B',
-      reason: 'replacement_authenticated',
-    });
+    // Primary stays as the first-connected client.
+    const status = await service.getStatus();
+    expect(status.primaryClientId).toBe('ext-A');
+    const descriptor = service.getActiveClientDescriptor();
+    expect(descriptor.extensionInstanceId).toBe('ext-A');
+
+    // No replacement event; both registered as sessions.
+    const replacement = auditEvents.find((e) => /replacement_authenticated/.test(e.event));
+    expect(replacement).toBeUndefined();
+    const registrations = auditEvents.filter((e) => /session_registered/.test(e.event));
+    expect(registrations).toHaveLength(2);
   });
 
 });
@@ -1138,11 +1143,20 @@ describe('§3.1 / §3.2 extension_hello handshake', () => {
 // `parseHelloAck` matches them as literal strings, so renaming any of
 // them is a wire-format break. This describe block pins the contract.
 describe('§11.2 hello rejection wire format (extension_hello_ack errors)', () => {
-  it('exports the four error codes the browser extension parses', () => {
+  it('exports the four original error codes the browser extension parses', () => {
     expect(HELLO_ERROR_TOKEN_MISMATCH).toBe('token_mismatch');
     expect(HELLO_ERROR_INVALID_PAYLOAD).toBe('invalid_payload');
     expect(HELLO_ERROR_TIMEOUT).toBe('hello_timeout');
     expect(HELLO_ERROR_VERSION_UNSUPPORTED).toBe('version_unsupported');
+  });
+
+  it('exports the two new Sub-sprint 4.1 error codes', () => {
+    expect(HELLO_ERROR_DUPLICATE_SESSION).toBe('duplicate_session');
+    expect(HELLO_ERROR_TOO_MANY_CLIENTS).toBe('too_many_clients');
+  });
+
+  it('exports DEFAULT_MAX_CLIENTS as 4', () => {
+    expect(DEFAULT_MAX_CLIENTS).toBe(4);
   });
 });
 
@@ -1464,6 +1478,108 @@ describe('§4.1 EADDRINUSE no longer silently downgrades', () => {
     await expect(conflicting.start()).rejects.toMatchObject({
       code: 'BRIDGE_UNAVAILABLE',
     });
+  });
+});
+
+describe('§17 Sub-sprint 4.1 — multi-client sessions', () => {
+  const cleanup = [];
+
+  afterEach(async () => {
+    while (cleanup.length) {
+      const item = cleanup.pop();
+      if (item?.stop) await item.stop();
+      if (item?.close) item.close();
+    }
+  });
+
+  async function makeService(opts = {}) {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      helloTimeoutMs: 2000,
+      ...opts,
+    });
+    cleanup.push(service);
+    await service.start();
+    return { port, service };
+  }
+
+  it('two different instanceIds both become connected entries', async () => {
+    const { port, service } = await makeService();
+    const wsA = await connectExtension(port, null, { token: 'secret-token', hello: { extensionInstanceId: 'multi-A' } });
+    const wsB = await connectExtension(port, null, { token: 'secret-token', hello: { extensionInstanceId: 'multi-B' } });
+    cleanup.push(wsA, wsB);
+    await new Promise((r) => setTimeout(r, 1200));
+    const status = await service.getStatus();
+    const connected = status.connectedClients.filter((c) => c.status === 'connected');
+    expect(connected).toHaveLength(2);
+    expect(connected.map((c) => c.extensionInstanceId).sort()).toEqual(['multi-A', 'multi-B']);
+  });
+
+  it('first connected client becomes primary', async () => {
+    const { port, service } = await makeService();
+    const wsA = await connectExtension(port, null, { token: 'secret-token', hello: { extensionInstanceId: 'primary-A' } });
+    const wsB = await connectExtension(port, null, { token: 'secret-token', hello: { extensionInstanceId: 'primary-B' } });
+    cleanup.push(wsA, wsB);
+    const status = await service.getStatus();
+    expect(status.primaryClientId).toBe('primary-A');
+    expect(service.getActiveClientDescriptor().extensionInstanceId).toBe('primary-A');
+  });
+
+  it('rejects duplicate_session when same instanceId is already active', async () => {
+    const { port } = await makeService();
+    await connectExtension(port, null, { token: 'secret-token', hello: { extensionInstanceId: 'dup-X' } });
+    const second = await openSocket(port);
+    cleanup.push(second);
+    const ack = await sendHello(second, { token: 'secret-token', overrides: { extensionInstanceId: 'dup-X' } });
+    expect(ack.ok).toBe(false);
+    expect(ack.error).toBe(HELLO_ERROR_DUPLICATE_SESSION);
+  });
+
+  it('rejects too_many_clients when at maxClients limit', async () => {
+    const { port } = await makeService({ maxClients: 2 });
+    const w1 = await connectExtension(port, null, { token: 'secret-token', hello: { extensionInstanceId: 'cap-1' } });
+    const w2 = await connectExtension(port, null, { token: 'secret-token', hello: { extensionInstanceId: 'cap-2' } });
+    cleanup.push(w1, w2);
+    const third = await openSocket(port);
+    cleanup.push(third);
+    const ack = await sendHello(third, { token: 'secret-token', overrides: { extensionInstanceId: 'cap-3' } });
+    expect(ack.ok).toBe(false);
+    expect(ack.error).toBe(HELLO_ERROR_TOO_MANY_CLIENTS);
+  });
+
+  it('closing a non-primary session does not affect primary or other sessions', async () => {
+    const { port, service } = await makeService();
+    const wsA = await connectExtension(port, null, { token: 'secret-token', hello: { extensionInstanceId: 'keep-A' } });
+    const wsB = await connectExtension(port, null, { token: 'secret-token', hello: { extensionInstanceId: 'drop-B' } });
+    cleanup.push(wsA);
+    wsB.close();
+    await new Promise((r) => setTimeout(r, 300));
+    const status = await service.getStatus();
+    expect(status.primaryClientId).toBe('keep-A');
+    const entry = status.connectedClients.find((c) => c.extensionInstanceId === 'keep-A');
+    expect(entry?.status).toBe('connected');
+  });
+
+  it('primary migrates to next open session when primary disconnects', async () => {
+    const { port, service } = await makeService();
+    const wsA = await connectExtension(port, null, { token: 'secret-token', hello: { extensionInstanceId: 'prim-A' } });
+    const wsB = await connectExtension(port, null, { token: 'secret-token', hello: { extensionInstanceId: 'prim-B' } });
+    cleanup.push(wsB);
+    wsA.close();
+    await new Promise((r) => setTimeout(r, 300));
+    const status = await service.getStatus();
+    expect(status.primaryClientId).toBe('prim-B');
+  });
+
+  it('getStatus includes primaryClientId and maxClients fields', async () => {
+    const { service } = await makeService({ maxClients: 3 });
+    const status = await service.getStatus();
+    expect(status).toHaveProperty('primaryClientId');
+    expect(status).toHaveProperty('maxClients', 3);
   });
 });
 

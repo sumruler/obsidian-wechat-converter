@@ -10317,6 +10317,9 @@ var require_wechatsync_bridge = __commonJS({
     var HELLO_ERROR_INVALID_PAYLOAD = "invalid_payload";
     var HELLO_ERROR_TIMEOUT = "hello_timeout";
     var HELLO_ERROR_VERSION_UNSUPPORTED = "version_unsupported";
+    var HELLO_ERROR_DUPLICATE_SESSION = "duplicate_session";
+    var HELLO_ERROR_TOO_MANY_CLIENTS = "too_many_clients";
+    var DEFAULT_MAX_CLIENTS = 4;
     function isUnsupportedBridgeMethodError(error = {}) {
       const message = String((error == null ? void 0 : error.message) || error || "");
       return /unknown method|unknown tool|method not found|not supported|unsupported/i.test(message);
@@ -10688,7 +10691,8 @@ var require_wechatsync_bridge = __commonJS({
         idFactory = () => `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
         connectionIdFactory = defaultConnectionIdFactory,
         onClientRegistryChange = null,
-        initialConnectedClients = []
+        initialConnectedClients = [],
+        maxClients = DEFAULT_MAX_CLIENTS
       } = options;
       if (!http) {
         throw new Error("http module is required to create Wechatsync bridge service.");
@@ -10722,7 +10726,7 @@ var require_wechatsync_bridge = __commonJS({
             lastConnectedAt: status === "connected" ? now : existing.lastConnectedAt
           };
         } else {
-          connectedClients = [{
+          connectedClients.push({
             extensionInstanceId: hello.extensionInstanceId,
             browserName: hello.browserName || "",
             profileLabel: hello.profileLabel || "",
@@ -10732,7 +10736,7 @@ var require_wechatsync_bridge = __commonJS({
             lastSeenAt: now,
             firstConnectedAt: now,
             lastConnectedAt: now
-          }];
+          });
         }
         scheduleRegistryChange();
       }
@@ -10760,9 +10764,10 @@ var require_wechatsync_bridge = __commonJS({
       }
       let wss = null;
       let httpServer = null;
-      let activeClient = null;
+      const sessions = /* @__PURE__ */ new Map();
+      const connectionIdToInstanceId = /* @__PURE__ */ new Map();
+      let primaryClientId = null;
       const pendingConnections = /* @__PURE__ */ new Map();
-      const pendingRequests = /* @__PURE__ */ new Map();
       const connectionResolvers = [];
       const wsOpenState = getWebSocketOpenState(WebSocketServer);
       const diagnostics = {
@@ -10784,7 +10789,11 @@ var require_wechatsync_bridge = __commonJS({
         return !!(ws && ws.readyState === wsOpenState);
       }
       function isAuthenticatedConnected() {
-        return !!(activeClient && isClientSocketOpen(activeClient.ws));
+        for (const session of sessions.values()) {
+          if (isClientSocketOpen(session.ws))
+            return true;
+        }
+        return false;
       }
       function notifyConnected() {
         while (connectionResolvers.length > 0) {
@@ -10815,7 +10824,7 @@ var require_wechatsync_bridge = __commonJS({
             type: "extension_hello_ack",
             ok: true,
             connectionId,
-            mode: "single-client",
+            mode: "multi-client",
             serverVersion: serverVersion || ""
           } : {
             type: "extension_hello_ack",
@@ -10843,42 +10852,61 @@ var require_wechatsync_bridge = __commonJS({
           clearTimeout(pending.helloTimeout);
         pendingConnections.delete(connectionId);
       }
-      function promoteToActive(pending, hello, origin) {
-        const previous = activeClient;
-        const next = {
+      function registerSession(pending, hello, origin) {
+        const instanceId = hello.extensionInstanceId;
+        const existing = sessions.get(instanceId);
+        if (existing && isClientSocketOpen(existing.ws)) {
+          rejectHello(pending, HELLO_ERROR_DUPLICATE_SESSION, { extensionInstanceId: instanceId });
+          return;
+        }
+        let openCount = 0;
+        for (const s of sessions.values()) {
+          if (isClientSocketOpen(s.ws))
+            openCount += 1;
+        }
+        if (openCount >= maxClients) {
+          rejectHello(pending, HELLO_ERROR_TOO_MANY_CLIENTS, { max: maxClients, current: openCount });
+          return;
+        }
+        if (existing) {
+          connectionIdToInstanceId.delete(existing.connectionId);
+          for (const [, req] of existing.pendingRequests.entries()) {
+            clearTimeout(req.timeout);
+            req.reject(createReadableBridgeError(new Error("Session replaced by reconnect.")));
+          }
+          existing.pendingRequests.clear();
+          sessions.delete(instanceId);
+        }
+        const session = {
           connectionId: pending.connectionId,
           ws: pending.ws,
-          extensionInstanceId: (hello == null ? void 0 : hello.extensionInstanceId) || "",
-          extensionId: (hello == null ? void 0 : hello.extensionId) || "",
-          version: (hello == null ? void 0 : hello.version) || "",
-          profileLabel: (hello == null ? void 0 : hello.profileLabel) || "",
-          browserName: (hello == null ? void 0 : hello.browserName) || "",
-          capabilities: (hello == null ? void 0 : hello.capabilities) || {},
+          extensionInstanceId: instanceId,
+          extensionId: hello.extensionId || "",
+          version: hello.version || "",
+          profileLabel: hello.profileLabel || "",
+          browserName: hello.browserName || "",
+          capabilities: hello.capabilities || {},
           connectedAt: pending.connectedAt,
           authenticatedAt: Date.now(),
-          origin: origin || pending.origin || ""
+          origin: origin || pending.origin || "",
+          pendingRequests: /* @__PURE__ */ new Map()
         };
-        if (previous && previous.connectionId !== next.connectionId && isClientSocketOpen(previous.ws)) {
-          audit("replacement_authenticated", {
-            old_connectionId: previous.connectionId,
-            new_connectionId: next.connectionId,
-            old_extensionInstanceId: previous.extensionInstanceId,
-            new_extensionInstanceId: next.extensionInstanceId,
-            old_connectedAt: previous.connectedAt,
-            new_connectedAt: next.connectedAt,
-            reason: "replacement_authenticated"
-          });
-          closeWs(previous.ws, "replaced-by-authenticated");
-        }
-        activeClient = next;
+        sessions.set(instanceId, session);
+        connectionIdToInstanceId.set(pending.connectionId, instanceId);
         removePendingConnection(pending.connectionId);
-        debug("Extension authenticated", {
-          connectionId: next.connectionId,
-          extensionInstanceId: next.extensionInstanceId,
-          profileLabel: next.profileLabel,
-          browserName: next.browserName,
-          version: next.version
+        if (primaryClientId === null) {
+          primaryClientId = instanceId;
+        }
+        diagnostics.helloAttempts += 1;
+        diagnostics.helloSuccesses += 1;
+        audit("session_registered", {
+          connectionId: session.connectionId,
+          extensionInstanceId: instanceId,
+          profileLabel: session.profileLabel,
+          browserName: session.browserName,
+          sessionsCount: sessions.size
         });
+        sendHelloAck(pending.ws, { ok: true, connectionId: pending.connectionId });
         upsertConnectedClient(hello, "connected");
         notifyConnected();
       }
@@ -10922,12 +10950,9 @@ var require_wechatsync_bridge = __commonJS({
           });
           return;
         }
-        diagnostics.helloAttempts += 1;
-        diagnostics.helloSuccesses += 1;
-        sendHelloAck(pending.ws, { ok: true, connectionId: pending.connectionId });
-        promoteToActive(pending, hello, origin);
+        registerSession(pending, hello, origin);
       }
-      function handleActiveMessage(raw) {
+      function handleSessionMessage(session, raw) {
         var _a;
         let message;
         try {
@@ -10937,15 +10962,14 @@ var require_wechatsync_bridge = __commonJS({
           return;
         }
         if ((message == null ? void 0 : message.type) === "extension_hello") {
-          debug("Ignoring extension_hello on already-authenticated client");
+          debug("Ignoring extension_hello on already-authenticated session");
           return;
         }
         if ((message == null ? void 0 : message.type) === "heartbeat") {
-          if (activeClient)
-            refreshClientSeen(activeClient.extensionInstanceId);
+          refreshClientSeen(session.extensionInstanceId);
           return;
         }
-        const pending = pendingRequests.get(message.id);
+        const pending = session.pendingRequests.get(message.id);
         if (!pending) {
           debug("Received response for one-way, unknown, or timed out request", {
             id: message.id,
@@ -10955,7 +10979,7 @@ var require_wechatsync_bridge = __commonJS({
           return;
         }
         clearTimeout(pending.timeout);
-        pendingRequests.delete(message.id);
+        session.pendingRequests.delete(message.id);
         if (message.error) {
           const errorMessage = message.error.message || message.error.error || String(message.error);
           debug("Request failed", {
@@ -10999,16 +11023,36 @@ var require_wechatsync_bridge = __commonJS({
             handlePendingMessage(stillPending, raw, origin);
             return;
           }
-          if (activeClient && activeClient.connectionId === connectionId) {
-            handleActiveMessage(raw);
-          }
+          const instanceId = connectionIdToInstanceId.get(connectionId);
+          const session = instanceId ? sessions.get(instanceId) : null;
+          if (session)
+            handleSessionMessage(session, raw);
         });
         ws.on("close", () => {
           removePendingConnection(connectionId);
-          if (activeClient && activeClient.connectionId === connectionId) {
-            debug("Active client disconnected", { connectionId });
-            markClientDisconnected(activeClient.extensionInstanceId);
-            activeClient = null;
+          const instanceId = connectionIdToInstanceId.get(connectionId);
+          if (instanceId) {
+            connectionIdToInstanceId.delete(connectionId);
+            const session = sessions.get(instanceId);
+            if (session) {
+              for (const [, req] of session.pendingRequests.entries()) {
+                clearTimeout(req.timeout);
+                req.reject(createReadableBridgeError(new Error("Extension disconnected.")));
+              }
+              session.pendingRequests.clear();
+              sessions.delete(instanceId);
+              markClientDisconnected(instanceId);
+              debug("Session disconnected", { connectionId, extensionInstanceId: instanceId });
+              if (primaryClientId === instanceId) {
+                primaryClientId = null;
+                for (const [id, s] of sessions.entries()) {
+                  if (isClientSocketOpen(s.ws)) {
+                    primaryClientId = id;
+                    break;
+                  }
+                }
+              }
+            }
           }
         });
         ws.on("error", (error) => {
@@ -11148,21 +11192,23 @@ var require_wechatsync_bridge = __commonJS({
         return getStatus();
       }
       async function stop() {
-        for (const [id, pending] of pendingRequests.entries()) {
-          clearTimeout(pending.timeout);
-          pending.reject(new Error(`Request cancelled: ${id}`));
+        for (const session of sessions.values()) {
+          for (const [id, req] of session.pendingRequests.entries()) {
+            clearTimeout(req.timeout);
+            req.reject(new Error(`Request cancelled: ${id}`));
+          }
+          session.pendingRequests.clear();
+          closeWs(session.ws, "stop");
         }
-        pendingRequests.clear();
+        sessions.clear();
+        connectionIdToInstanceId.clear();
+        primaryClientId = null;
         for (const pending of pendingConnections.values()) {
           if (pending.helloTimeout)
             clearTimeout(pending.helloTimeout);
           closeWs(pending.ws, "stop");
         }
         pendingConnections.clear();
-        if (activeClient) {
-          closeWs(activeClient.ws, "stop");
-          activeClient = null;
-        }
         if (wss) {
           await new Promise((resolve) => wss.close(resolve));
           wss = null;
@@ -11194,13 +11240,14 @@ var require_wechatsync_bridge = __commonJS({
         if (!method) {
           return Promise.reject(new Error("Wechatsync bridge method is required."));
         }
-        if (!activeClient) {
+        const session = primaryClientId ? sessions.get(primaryClientId) : null;
+        if (!session) {
           if (pendingConnections.size > 0) {
             return Promise.reject(createReadableBridgeError(new Error("Extension not authenticated.")));
           }
           return Promise.reject(createReadableBridgeError(new Error("Extension not connected.")));
         }
-        if (!isClientSocketOpen(activeClient.ws)) {
+        if (!isClientSocketOpen(session.ws)) {
           return Promise.reject(createReadableBridgeError(new Error("Extension not connected.")));
         }
         const id = idFactory();
@@ -11210,32 +11257,34 @@ var require_wechatsync_bridge = __commonJS({
         const timeoutMs = Number.isFinite(Number(options2.timeoutMs)) && Number(options2.timeoutMs) > 0 ? Number(options2.timeoutMs) : requestTimeoutMs;
         return new Promise((resolve, reject) => {
           const timeout = setTimeout(() => {
-            pendingRequests.delete(id);
+            session.pendingRequests.delete(id);
             debug("Request timed out", { id, method, timeoutMs });
             reject(createReadableBridgeError(new Error(`Request timeout: ${method}`)));
           }, timeoutMs);
-          pendingRequests.set(id, { resolve, reject, timeout, method, startedAt: Date.now() });
+          session.pendingRequests.set(id, { resolve, reject, timeout, method, startedAt: Date.now() });
           debug("Sending request", {
             id,
             method,
             timeoutMs,
-            connectionId: activeClient.connectionId,
+            connectionId: session.connectionId,
+            extensionInstanceId: session.extensionInstanceId,
             paramKeys: params && typeof params === "object" ? Object.keys(params) : []
           });
-          activeClient.ws.send(JSON.stringify(message));
+          session.ws.send(JSON.stringify(message));
         });
       }
       function sendInternal(method, params) {
         if (!method) {
           throw new Error("Wechatsync bridge method is required.");
         }
-        if (!activeClient) {
+        const session = primaryClientId ? sessions.get(primaryClientId) : null;
+        if (!session) {
           if (pendingConnections.size > 0) {
             throw createReadableBridgeError(new Error("Extension not authenticated."));
           }
           throw createReadableBridgeError(new Error("Extension not connected."));
         }
-        if (!isClientSocketOpen(activeClient.ws)) {
+        if (!isClientSocketOpen(session.ws)) {
           throw createReadableBridgeError(new Error("Extension not connected."));
         }
         const id = idFactory();
@@ -11245,10 +11294,11 @@ var require_wechatsync_bridge = __commonJS({
         debug("Sending one-way request", {
           id,
           method,
-          connectionId: activeClient.connectionId,
+          connectionId: session.connectionId,
+          extensionInstanceId: session.extensionInstanceId,
           paramKeys: params && typeof params === "object" ? Object.keys(params) : []
         });
-        activeClient.ws.send(JSON.stringify(message));
+        session.ws.send(JSON.stringify(message));
         return { accepted: true, requestId: id, method };
       }
       async function request2(method, params, options2 = {}) {
@@ -11348,6 +11398,8 @@ var require_wechatsync_bridge = __commonJS({
           allowRemote: !!allowRemote,
           port,
           connectedClients: connectedClients.map((c) => ({ ...c })),
+          primaryClientId,
+          maxClients,
           diagnostics: getDiagnostics()
         };
       }
@@ -11362,19 +11414,20 @@ var require_wechatsync_bridge = __commonJS({
         };
       }
       function getActiveClientDescriptor() {
-        if (!activeClient)
+        const session = primaryClientId ? sessions.get(primaryClientId) : null;
+        if (!session)
           return null;
         return {
-          connectionId: activeClient.connectionId,
-          extensionInstanceId: activeClient.extensionInstanceId,
-          extensionId: activeClient.extensionId,
-          version: activeClient.version,
-          profileLabel: activeClient.profileLabel,
-          browserName: activeClient.browserName,
-          capabilities: { ...activeClient.capabilities || {} },
-          connectedAt: activeClient.connectedAt,
-          authenticatedAt: activeClient.authenticatedAt,
-          origin: activeClient.origin
+          connectionId: session.connectionId,
+          extensionInstanceId: session.extensionInstanceId,
+          extensionId: session.extensionId,
+          version: session.version,
+          profileLabel: session.profileLabel,
+          browserName: session.browserName,
+          capabilities: { ...session.capabilities || {} },
+          connectedAt: session.connectedAt,
+          authenticatedAt: session.authenticatedAt,
+          origin: session.origin
         };
       }
       return {
@@ -11409,6 +11462,9 @@ var require_wechatsync_bridge = __commonJS({
       HELLO_ERROR_INVALID_PAYLOAD,
       HELLO_ERROR_TIMEOUT,
       HELLO_ERROR_VERSION_UNSUPPORTED,
+      HELLO_ERROR_DUPLICATE_SESSION,
+      HELLO_ERROR_TOO_MANY_CLIENTS,
+      DEFAULT_MAX_CLIENTS,
       createReadableBridgeError,
       createWechatSyncBridgeService: createWechatSyncBridgeService2,
       isOriginAllowedForWebSocket,
