@@ -13303,7 +13303,21 @@ var require_multi_platform_tab = __commonJS({
         const clients = multiPlatformSettings.connectedClients || [];
         const liveClient = clients.find((c) => c.status === "connected");
         const lastClient = clients[clients.length - 1];
-        const BROWSER_EMOJI = { chrome: "\u{1F310}", edge: "\u{1F310}", firefox: "\u{1F98A}", safari: "\u{1F9ED}", arc: "\u{1F308}" };
+        const BROWSER_EMOJI = {
+          chrome: "\u{1F310}",
+          chromium: "\u{1F310}",
+          edge: "\uFFFD",
+          "microsoft edge": "\u{1F30A}",
+          firefox: "\u{1F98A}",
+          safari: "\u{1F9ED}",
+          arc: "\u{1F308}",
+          brave: "\u{1F981}",
+          opera: "\u{1F3AD}",
+          vivaldi: "\u{1F3BB}",
+          comet: "\u2604\uFE0F",
+          orion: "\u2B50",
+          zen: "\u{1FAB7}"
+        };
         const bar = containerEl.createDiv({ cls: "wechat-multiplatform-token-status" });
         const dot = bar.createEl("span", { cls: "wechat-multiplatform-token-status-dot" });
         const body = bar.createDiv({ cls: "wechat-bridge-status-body" });

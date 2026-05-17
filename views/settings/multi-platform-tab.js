@@ -168,7 +168,21 @@ function renderMultiPlatformSettingsTab(tab, containerEl) {
     const liveClient = clients.find((c) => c.status === 'connected');
     const lastClient = clients[clients.length - 1];
 
-    const BROWSER_EMOJI = { chrome: '🌐', edge: '🌐', firefox: '🦊', safari: '🧭', arc: '🌈' };
+    const BROWSER_EMOJI = {
+      chrome: '🌐',
+      chromium: '🌐',
+      edge: '�',
+      'microsoft edge': '🌊',
+      firefox: '🦊',
+      safari: '🧭',
+      arc: '🌈',
+      brave: '🦁',
+      opera: '🎭',
+      vivaldi: '🎻',
+      comet: '☄️',
+      orion: '⭐',
+      zen: '🪷',
+    };
 
     function fmtRelativeTime(ts) {
       if (!ts) return '';
