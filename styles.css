@@ -2368,6 +2368,52 @@ input[type="range"].apple-slider:active::-webkit-slider-thumb {
   font-weight: 650;
 }
 
+.wechat-multiplatform-warning {
+  color: var(--text-error, #d33);
+  font-weight: 600;
+}
+
+.wechat-multiplatform-token-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -4px 0 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--background-secondary, #f5f5f5);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.wechat-multiplatform-token-status-dot {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--background-modifier-border, #ccc);
+  color: var(--text-normal, #333);
+}
+
+.wechat-multiplatform-token-status-dot.is-error {
+  background: color-mix(in srgb, var(--text-error, #d33) 15%, transparent);
+  color: var(--text-error, #d33);
+}
+
+.wechat-multiplatform-token-status-dot.is-unknown {
+  background: color-mix(in srgb, var(--text-warning, #d99300) 18%, transparent);
+  color: var(--text-warning, #d99300);
+}
+
+.wechat-multiplatform-token-status-dot.is-ok {
+  background: color-mix(in srgb, var(--text-success, #2c9c4c) 18%, transparent);
+  color: var(--text-success, #2c9c4c);
+}
+
+.wechat-multiplatform-token-status-text {
+  color: var(--text-muted, #666);
+}
+
 .wechat-platform-picker-header {
   display: flex;
   align-items: flex-start;

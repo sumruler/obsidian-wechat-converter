@@ -3,7 +3,14 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 360000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 60000;
 const DEFAULT_PLATFORM_REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_SYNC_REQUEST_TIMEOUT_MS = 180000;
+const DEFAULT_HELLO_TIMEOUT_MS = 30000;
+const LOCAL_BIND_HOST = '127.0.0.1';
+const REMOTE_BIND_HOST = '0.0.0.0';
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+const HELLO_ERROR_TOKEN_MISMATCH = 'token_mismatch';
+const HELLO_ERROR_INVALID_PAYLOAD = 'invalid_payload';
+const HELLO_ERROR_TIMEOUT = 'hello_timeout';
+const HELLO_ERROR_VERSION_UNSUPPORTED = 'version_unsupported';
 
 function isUnsupportedBridgeMethodError(error = {}) {
   const message = String(error?.message || error || '');
@@ -12,7 +19,7 @@ function isUnsupportedBridgeMethodError(error = {}) {
 
 function isRecoverableBridgeConnectionError(error = {}) {
   const code = error?.code || '';
-  return ['EXTENSION_NOT_CONNECTED', 'BRIDGE_UNAVAILABLE', 'BRIDGE_REQUEST_TIMEOUT'].includes(code);
+  return ['EXTENSION_NOT_CONNECTED', 'EXTENSION_NOT_AUTHENTICATED', 'BRIDGE_UNAVAILABLE', 'BRIDGE_REQUEST_TIMEOUT'].includes(code);
 }
 
 function sleep(ms) {
@@ -221,18 +228,44 @@ function createSocketWrapper(socket) {
   return wrapper;
 }
 
-function createMinimalWebSocketServer({ http, port, logger = console }) {
+function isOriginAllowedForWebSocket(origin = '', { allowlist = null } = {}) {
+  if (!allowlist) return true;
+  const trimmed = String(origin || '').trim();
+  if (!trimmed) return true; // empty origin = native / node client
+  for (const pattern of allowlist) {
+    if (typeof pattern === 'string') {
+      if (pattern === '*' || pattern === trimmed) return true;
+      if (pattern.endsWith('*') && trimmed.startsWith(pattern.slice(0, -1))) return true;
+    } else if (pattern instanceof RegExp) {
+      if (pattern.test(trimmed)) return true;
+    }
+  }
+  return false;
+}
+
+function createMinimalWebSocketServer({ http, port, host = LOCAL_BIND_HOST, originAllowlist = null, logger = console }) {
   const crypto = require('crypto');
   const emitter = createEmitter();
   const server = http.createServer();
   const sockets = new Set();
 
   server.on('upgrade', (req, socket) => {
+    const origin = req.headers.origin || '';
     logger.debug?.('[WechatsyncBridge] WebSocket upgrade received', {
       url: req.url,
-      origin: req.headers.origin || '',
+      origin,
       userAgent: req.headers['user-agent'] || '',
     });
+
+    if (originAllowlist && !isOriginAllowedForWebSocket(origin, { allowlist: originAllowlist })) {
+      logger.warn?.('[WechatsyncBridge] WebSocket upgrade rejected: origin not allowed', { origin });
+      try {
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      } catch {}
+      socket.destroy();
+      return;
+    }
+
     const key = req.headers['sec-websocket-key'];
     if (!key) {
       logger.warn?.('[WechatsyncBridge] WebSocket upgrade rejected: missing sec-websocket-key');
@@ -256,10 +289,10 @@ function createMinimalWebSocketServer({ http, port, logger = console }) {
     const wrapped = createSocketWrapper(socket);
     sockets.add(wrapped);
     wrapped.on('close', () => sockets.delete(wrapped));
-    emitter.emit('connection', wrapped);
+    emitter.emit('connection', wrapped, { origin });
   });
   server.on('error', (error) => emitter.emit('error', error));
-  server.listen(port, () => emitter.emit('listening'));
+  server.listen(port, host, () => emitter.emit('listening'));
 
   return {
     on: emitter.on.bind(emitter),
@@ -287,6 +320,12 @@ function createReadableBridgeError(error) {
   if (/Invalid or missing token|MCP token not configured|401|403/i.test(message)) {
     const friendly = new Error('浏览器插件已响应，但连接令牌校验失败。请确认 Obsidian 与浏览器插件使用同一个连接令牌。');
     friendly.code = 'AUTH_FAILED';
+    friendly.cause = error;
+    return friendly;
+  }
+  if (/Extension not authenticated/i.test(message)) {
+    const friendly = new Error('浏览器插件已连接但未通过认证。请确认插件已升级到支持安全握手的版本，且使用与 Obsidian 一致的连接令牌。');
+    friendly.code = 'EXTENSION_NOT_AUTHENTICATED';
     friendly.cause = error;
     return friendly;
   }
@@ -334,6 +373,18 @@ function readRequestBody(req) {
   });
 }
 
+function defaultConnectionIdFactory() {
+  try {
+    const nodeCrypto = require('crypto');
+    if (typeof nodeCrypto.randomUUID === 'function') {
+      return nodeCrypto.randomUUID();
+    }
+  } catch {
+    // Fall through to time-based id.
+  }
+  return `conn-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
 function createWechatSyncBridgeService(options = {}) {
   const {
     WebSocketServer,
@@ -342,28 +393,52 @@ function createWechatSyncBridgeService(options = {}) {
     token = '',
     requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
     connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
+    helloTimeoutMs = DEFAULT_HELLO_TIMEOUT_MS,
+    allowRemote = false,
+    allowLegacyUnauthenticated = false,
+    originAllowlist = null,
+    serverVersion = '',
     logger = console,
     idFactory = () => `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
+    connectionIdFactory = defaultConnectionIdFactory,
   } = options;
 
   if (!http) {
     throw new Error('http module is required to create Wechatsync bridge service.');
   }
 
+  const bindHost = allowRemote ? REMOTE_BIND_HOST : LOCAL_BIND_HOST;
+
   let wss = null;
   let httpServer = null;
-  let client = null;
-  let isServerMode = false;
+  /** @type {{ connectionId: string, ws: any, extensionInstanceId: string, extensionId: string, version: string, profileLabel: string, browserName: string, capabilities: object, connectedAt: number, authenticatedAt: number } | null} */
+  let activeClient = null;
+  const pendingConnections = new Map();
   const pendingRequests = new Map();
   const connectionResolvers = [];
   const wsOpenState = getWebSocketOpenState(WebSocketServer);
+  const diagnostics = {
+    socketsOpened: 0,
+    helloAttempts: 0,
+    helloRejections: 0,
+    helloSuccesses: 0,
+    lastHelloRejection: null,
+  };
 
   function debug(message, details) {
     logger.debug?.(`[WechatsyncBridge] ${message}`, details || '');
   }
 
-  function isPrimaryConnected() {
-    return !!(client && client.readyState === wsOpenState);
+  function audit(event, details) {
+    logger.info?.(`[WechatsyncBridge:audit] ${event}`, details || {});
+  }
+
+  function isClientSocketOpen(ws) {
+    return !!(ws && ws.readyState === wsOpenState);
+  }
+
+  function isAuthenticatedConnected() {
+    return !!(activeClient && isClientSocketOpen(activeClient.ws));
   }
 
   function notifyConnected() {
@@ -373,21 +448,294 @@ function createWechatSyncBridgeService(options = {}) {
     }
   }
 
+  function tryParseHelloPayload(message) {
+    if (!message || typeof message !== 'object') return null;
+    if (message.type !== 'extension_hello') return null;
+    return {
+      type: 'extension_hello',
+      token: typeof message.token === 'string' ? message.token : '',
+      extensionInstanceId: typeof message.extensionInstanceId === 'string' ? message.extensionInstanceId : '',
+      extensionId: typeof message.extensionId === 'string' ? message.extensionId : '',
+      version: typeof message.version === 'string' ? message.version : '',
+      profileLabel: typeof message.profileLabel === 'string' ? message.profileLabel : '',
+      browserName: typeof message.browserName === 'string' ? message.browserName : '',
+      capabilities: message.capabilities && typeof message.capabilities === 'object' ? message.capabilities : {},
+    };
+  }
+
+  function sendHelloAck(ws, { ok, connectionId = '', error = '' }) {
+    try {
+      const payload = ok
+        ? {
+            type: 'extension_hello_ack',
+            ok: true,
+            connectionId,
+            mode: 'single-client',
+            serverVersion: serverVersion || '',
+          }
+        : {
+            type: 'extension_hello_ack',
+            ok: false,
+            error,
+          };
+      ws.send(JSON.stringify(payload));
+    } catch (err) {
+      logger.warn?.('Failed to send extension_hello_ack:', err);
+    }
+  }
+
+  function closeWs(ws, reason) {
+    try {
+      ws.close?.();
+    } catch (err) {
+      debug('Failed to close socket', { reason, error: err?.message || String(err) });
+    }
+  }
+
+  function removePendingConnection(connectionId) {
+    const pending = pendingConnections.get(connectionId);
+    if (!pending) return;
+    if (pending.helloTimeout) clearTimeout(pending.helloTimeout);
+    pendingConnections.delete(connectionId);
+  }
+
+  function promoteToActive(pending, hello, origin) {
+    const previous = activeClient;
+    const next = {
+      connectionId: pending.connectionId,
+      ws: pending.ws,
+      extensionInstanceId: hello?.extensionInstanceId || '',
+      extensionId: hello?.extensionId || '',
+      version: hello?.version || '',
+      profileLabel: hello?.profileLabel || '',
+      browserName: hello?.browserName || '',
+      capabilities: hello?.capabilities || {},
+      connectedAt: pending.connectedAt,
+      authenticatedAt: Date.now(),
+      origin: origin || pending.origin || '',
+    };
+
+    if (previous && previous.connectionId !== next.connectionId && isClientSocketOpen(previous.ws)) {
+      audit('replacement_authenticated', {
+        old_connectionId: previous.connectionId,
+        new_connectionId: next.connectionId,
+        old_extensionInstanceId: previous.extensionInstanceId,
+        new_extensionInstanceId: next.extensionInstanceId,
+        old_connectedAt: previous.connectedAt,
+        new_connectedAt: next.connectedAt,
+        reason: 'replacement_authenticated',
+      });
+      closeWs(previous.ws, 'replaced-by-authenticated');
+    }
+
+    activeClient = next;
+    removePendingConnection(pending.connectionId);
+    debug('Extension authenticated', {
+      connectionId: next.connectionId,
+      extensionInstanceId: next.extensionInstanceId,
+      profileLabel: next.profileLabel,
+      browserName: next.browserName,
+      version: next.version,
+      legacy: !hello,
+    });
+    notifyConnected();
+  }
+
+  function rejectHello(pending, errorCode, details = {}) {
+    diagnostics.helloAttempts += 1;
+    diagnostics.helloRejections += 1;
+    diagnostics.lastHelloRejection = {
+      reason: errorCode,
+      at: Date.now(),
+      connectionId: pending.connectionId,
+      details: { ...details },
+    };
+    audit('hello_rejected', {
+      connectionId: pending.connectionId,
+      reason: errorCode,
+      ...details,
+    });
+    sendHelloAck(pending.ws, { ok: false, error: errorCode });
+    removePendingConnection(pending.connectionId);
+    closeWs(pending.ws, `hello_rejected:${errorCode}`);
+  }
+
+  function handlePendingMessage(pending, raw, origin) {
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      logger.warn?.('Failed to parse pending bridge message:', error);
+      rejectHello(pending, HELLO_ERROR_INVALID_PAYLOAD, { parseError: true });
+      return;
+    }
+    const hello = tryParseHelloPayload(parsed);
+    if (!hello) {
+      rejectHello(pending, HELLO_ERROR_INVALID_PAYLOAD, { receivedType: parsed?.type || '' });
+      return;
+    }
+    if (token && hello.token !== token) {
+      rejectHello(pending, HELLO_ERROR_TOKEN_MISMATCH, {
+        extensionInstanceId: hello.extensionInstanceId,
+        extensionId: hello.extensionId,
+      });
+      return;
+    }
+    diagnostics.helloAttempts += 1;
+    diagnostics.helloSuccesses += 1;
+    sendHelloAck(pending.ws, { ok: true, connectionId: pending.connectionId });
+    promoteToActive(pending, hello, origin);
+  }
+
+  function handleActiveMessage(raw) {
+    let message;
+    try {
+      message = JSON.parse(raw);
+    } catch (error) {
+      logger.warn?.('Failed to parse Wechatsync bridge response:', error);
+      return;
+    }
+
+    if (message?.type === 'extension_hello') {
+      debug('Ignoring extension_hello on already-authenticated client');
+      return;
+    }
+
+    const pending = pendingRequests.get(message.id);
+    if (!pending) {
+      debug('Received response for one-way, unknown, or timed out request', {
+        id: message.id,
+        hasError: !!message.error,
+        resultKind: Array.isArray(message.result) ? 'array' : typeof message.result,
+      });
+      return;
+    }
+
+    clearTimeout(pending.timeout);
+    pendingRequests.delete(message.id);
+
+    if (message.error) {
+      const errorMessage = message.error.message || message.error.error || String(message.error);
+      debug('Request failed', {
+        id: message.id,
+        method: pending.method,
+        elapsedMs: Date.now() - pending.startedAt,
+        error: errorMessage,
+      });
+      pending.reject(createReadableBridgeError(new Error(errorMessage)));
+      return;
+    }
+    debug('Request completed', {
+      id: message.id,
+      method: pending.method,
+      elapsedMs: Date.now() - pending.startedAt,
+      resultKind: Array.isArray(message.result) ? 'array' : typeof message.result,
+    });
+    pending.resolve(message.result);
+  }
+
+  function registerConnection(ws, { origin = '' } = {}) {
+    const connectionId = connectionIdFactory();
+    diagnostics.socketsOpened += 1;
+    const pending = {
+      connectionId,
+      ws,
+      connectedAt: Date.now(),
+      origin,
+      helloTimeout: null,
+    };
+    pendingConnections.set(connectionId, pending);
+    debug('Extension connected (pending hello)', { connectionId, origin });
+
+    if (allowLegacyUnauthenticated) {
+      // Backwards compatibility: legacy extension without hello support.
+      audit('legacy_unauthenticated_promotion', { connectionId, origin });
+      promoteToActive(pending, null, origin);
+    } else {
+      pending.helloTimeout = setTimeout(() => {
+        if (!pendingConnections.has(connectionId)) return;
+        rejectHello(pending, HELLO_ERROR_TIMEOUT, { timeoutMs: helloTimeoutMs });
+      }, helloTimeoutMs);
+    }
+
+    ws.on('message', (data) => {
+      const raw = data.toString();
+      const stillPending = pendingConnections.get(connectionId);
+      if (stillPending) {
+        handlePendingMessage(stillPending, raw, origin);
+        return;
+      }
+      if (activeClient && activeClient.connectionId === connectionId) {
+        handleActiveMessage(raw);
+      }
+    });
+    ws.on('close', () => {
+      removePendingConnection(connectionId);
+      if (activeClient && activeClient.connectionId === connectionId) {
+        debug('Active client disconnected', { connectionId });
+        activeClient = null;
+      }
+    });
+    ws.on('error', (error) => {
+      logger.warn?.('Wechatsync bridge WebSocket error:', error);
+    });
+  }
+
+  function isAuthorizedHttpRequest(req) {
+    if (!token) return { ok: true };
+    const header = req.headers['authorization'] || req.headers['Authorization'] || '';
+    const value = Array.isArray(header) ? header[0] : header;
+    if (!value || typeof value !== 'string') {
+      return { ok: false, status: 401, reason: 'missing_authorization' };
+    }
+    const match = /^Bearer\s+(.+)$/i.exec(value.trim());
+    if (!match) {
+      return { ok: false, status: 401, reason: 'invalid_authorization_scheme' };
+    }
+    if (match[1].trim() !== token) {
+      return { ok: false, status: 403, reason: 'invalid_token' };
+    }
+    return { ok: true };
+  }
+
+  function denyHttpRequest(res, status, reason) {
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: reason }));
+  }
+
   async function startHttpApi() {
     httpServer = http.createServer(async (req, res) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      // §3.4: do not emit Access-Control-Allow-Origin by default; rely on
+      // browser-enforced same-origin policy as the second defense layer.
 
       if (req.method === 'OPTIONS') {
-        res.writeHead(200);
+        res.writeHead(204);
         res.end();
+        return;
+      }
+
+      const auth = isAuthorizedHttpRequest(req);
+      if (!auth.ok) {
+        audit('http_request_unauthorized', {
+          url: req.url,
+          method: req.method,
+          reason: auth.reason,
+        });
+        denyHttpRequest(res, auth.status, auth.reason);
         return;
       }
 
       if (req.method === 'GET' && req.url === '/status') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ connected: isPrimaryConnected(), mode: 'primary' }));
+        res.end(JSON.stringify({
+          connected: isAuthenticatedConnected(),
+          mode: 'primary',
+          authenticated: isAuthenticatedConnected(),
+          pendingConnections: pendingConnections.size,
+          host: bindHost,
+          allowRemote: !!allowRemote,
+          allowLegacyUnauthenticated: !!allowLegacyUnauthenticated,
+        }));
         return;
       }
 
@@ -425,7 +773,7 @@ function createWechatSyncBridgeService(options = {}) {
 
     await new Promise((resolve, reject) => {
       httpServer.once('error', reject);
-      httpServer.listen(port + 1, () => {
+      httpServer.listen({ port: port + 1, host: bindHost }, () => {
         httpServer.off?.('error', reject);
         resolve();
       });
@@ -436,8 +784,8 @@ function createWechatSyncBridgeService(options = {}) {
     await new Promise((resolve, reject) => {
       try {
         wss = WebSocketServer
-          ? new WebSocketServer({ port })
-          : createMinimalWebSocketServer({ http, port, logger });
+          ? new WebSocketServer({ port, host: bindHost })
+          : createMinimalWebSocketServer({ http, port, host: bindHost, originAllowlist, logger });
       } catch (error) {
         reject(error);
         return;
@@ -445,20 +793,10 @@ function createWechatSyncBridgeService(options = {}) {
 
       wss.once('listening', resolve);
       wss.once('error', reject);
-      wss.on('connection', (ws) => {
-        client = ws;
-        debug('Extension connected', { port, mode: 'primary' });
-        notifyConnected();
-
-        ws.on('message', (data) => {
-          handleMessage(data.toString());
-        });
-        ws.on('close', () => {
-          if (client === ws) client = null;
-        });
-        ws.on('error', (error) => {
-          logger.warn?.('Wechatsync bridge WebSocket error:', error);
-        });
+      wss.on('connection', (ws, request) => {
+        // Both the ws library and our minimal server emit (ws, request|extras).
+        const origin = request?.headers?.origin || request?.origin || '';
+        registerConnection(ws, { origin });
       });
     });
 
@@ -473,53 +811,24 @@ function createWechatSyncBridgeService(options = {}) {
     }
   }
 
-  async function checkPrimaryHealth() {
-    return new Promise((resolve) => {
-      const req = http.request({
-        hostname: 'localhost',
-        port: port + 1,
-        path: '/status',
-        method: 'GET',
-        timeout: 3000,
-      }, (res) => {
-        let body = '';
-        res.on('data', (chunk) => {
-          body += chunk;
-        });
-        res.on('end', () => {
-          try {
-            const status = JSON.parse(body);
-            resolve({ connected: !!status.connected, mode: status.mode || 'primary' });
-          } catch {
-            resolve({ connected: false, error: 'Invalid response from primary bridge.' });
-          }
-        });
-      });
-
-      req.on('error', (error) => resolve({ connected: false, error: error.message }));
-      req.on('timeout', () => {
-        req.destroy();
-        resolve({ connected: false, error: 'Primary bridge health check timeout.' });
-      });
-      req.end();
-    });
-  }
-
   async function start() {
-    if (wss || isServerMode) {
+    if (wss) {
       return getStatus();
     }
 
     try {
       await startServer();
-      isServerMode = true;
-      debug('Primary bridge started', { port, httpPort: port + 1 });
+      debug('Bridge started', {
+        port,
+        httpPort: port + 1,
+        host: bindHost,
+        allowRemote,
+        allowLegacyUnauthenticated,
+      });
     } catch (error) {
-      if (error?.code !== 'EADDRINUSE') {
-        throw createReadableBridgeError(error);
-      }
-      isServerMode = false;
-      debug('Using existing primary bridge', { port, httpPort: port + 1 });
+      // §4.1: EADDRINUSE no longer silently degrades into SECONDARY mode.
+      // Surface the failure so the user can fix port conflicts.
+      throw createReadableBridgeError(error);
     }
 
     return getStatus();
@@ -532,6 +841,17 @@ function createWechatSyncBridgeService(options = {}) {
     }
     pendingRequests.clear();
 
+    for (const pending of pendingConnections.values()) {
+      if (pending.helloTimeout) clearTimeout(pending.helloTimeout);
+      closeWs(pending.ws, 'stop');
+    }
+    pendingConnections.clear();
+
+    if (activeClient) {
+      closeWs(activeClient.ws, 'stop');
+      activeClient = null;
+    }
+
     if (wss) {
       await new Promise((resolve) => wss.close(resolve));
       wss = null;
@@ -540,88 +860,38 @@ function createWechatSyncBridgeService(options = {}) {
       await new Promise((resolve) => httpServer.close(resolve));
       httpServer = null;
     }
-    client = null;
-    isServerMode = false;
   }
 
-  function waitForPrimaryConnection(timeoutMs = connectTimeoutMs) {
-    if (isPrimaryConnected()) return Promise.resolve();
+  function waitForConnection(timeoutMs = connectTimeoutMs) {
+    if (isAuthenticatedConnected()) return Promise.resolve();
     return new Promise((resolve, reject) => {
+      let wrappedResolve;
       const timeout = setTimeout(() => {
-        const index = connectionResolvers.indexOf(resolve);
+        const index = connectionResolvers.indexOf(wrappedResolve);
         if (index >= 0) connectionResolvers.splice(index, 1);
         reject(createReadableBridgeError(new Error('timeout:no_extension')));
       }, timeoutMs);
 
-      connectionResolvers.push(() => {
+      wrappedResolve = () => {
         clearTimeout(timeout);
         resolve();
-      });
+      };
+      connectionResolvers.push(wrappedResolve);
     });
-  }
-
-  async function waitForConnection(timeoutMs = connectTimeoutMs) {
-    if (isServerMode) {
-      return waitForPrimaryConnection(timeoutMs);
-    }
-
-    const started = Date.now();
-    while (Date.now() - started < timeoutMs) {
-      const health = await checkPrimaryHealth();
-      if (health.connected) return;
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-    throw createReadableBridgeError(new Error('timeout:no_extension'));
-  }
-
-  function handleMessage(data) {
-    let message;
-    try {
-      message = JSON.parse(data);
-    } catch (error) {
-      logger.warn?.('Failed to parse Wechatsync bridge response:', error);
-      return;
-    }
-
-    const pending = pendingRequests.get(message.id);
-    if (!pending) {
-      debug('Received response for one-way, unknown, or timed out request', {
-        id: message.id,
-        hasError: !!message.error,
-        resultKind: Array.isArray(message.result) ? 'array' : typeof message.result,
-      });
-      return;
-    }
-
-    clearTimeout(pending.timeout);
-    pendingRequests.delete(message.id);
-
-    if (message.error) {
-      const errorMessage = message.error.message || message.error.error || String(message.error);
-      debug('Request failed', {
-        id: message.id,
-        method: pending.method,
-        elapsedMs: Date.now() - pending.startedAt,
-        error: errorMessage,
-      });
-      pending.reject(createReadableBridgeError(new Error(errorMessage)));
-      return;
-    }
-    debug('Request completed', {
-      id: message.id,
-      method: pending.method,
-      elapsedMs: Date.now() - pending.startedAt,
-      resultKind: Array.isArray(message.result) ? 'array' : typeof message.result,
-    });
-    pending.resolve(message.result);
   }
 
   function requestInternal(method, params, options = {}) {
-    if (!isPrimaryConnected()) {
-      return Promise.reject(createReadableBridgeError(new Error('Extension not connected.')));
-    }
     if (!method) {
       return Promise.reject(new Error('Wechatsync bridge method is required.'));
+    }
+    if (!activeClient) {
+      if (pendingConnections.size > 0) {
+        return Promise.reject(createReadableBridgeError(new Error('Extension not authenticated.')));
+      }
+      return Promise.reject(createReadableBridgeError(new Error('Extension not connected.')));
+    }
+    if (!isClientSocketOpen(activeClient.ws)) {
+      return Promise.reject(createReadableBridgeError(new Error('Extension not connected.')));
     }
 
     const id = idFactory();
@@ -643,19 +913,25 @@ function createWechatSyncBridgeService(options = {}) {
         id,
         method,
         timeoutMs,
-        mode: 'primary',
+        connectionId: activeClient.connectionId,
         paramKeys: params && typeof params === 'object' ? Object.keys(params) : [],
       });
-      client.send(JSON.stringify(message));
+      activeClient.ws.send(JSON.stringify(message));
     });
   }
 
   function sendInternal(method, params) {
-    if (!isPrimaryConnected()) {
-      throw createReadableBridgeError(new Error('Extension not connected.'));
-    }
     if (!method) {
       throw new Error('Wechatsync bridge method is required.');
+    }
+    if (!activeClient) {
+      if (pendingConnections.size > 0) {
+        throw createReadableBridgeError(new Error('Extension not authenticated.'));
+      }
+      throw createReadableBridgeError(new Error('Extension not connected.'));
+    }
+    if (!isClientSocketOpen(activeClient.ws)) {
+      throw createReadableBridgeError(new Error('Extension not connected.'));
     }
 
     const id = idFactory();
@@ -664,107 +940,16 @@ function createWechatSyncBridgeService(options = {}) {
     debug('Sending one-way request', {
       id,
       method,
-      mode: 'primary',
+      connectionId: activeClient.connectionId,
       paramKeys: params && typeof params === 'object' ? Object.keys(params) : [],
     });
-    client.send(JSON.stringify(message));
+    activeClient.ws.send(JSON.stringify(message));
     return { accepted: true, requestId: id, method };
-  }
-
-  function requestViaHttp(method, params, options = {}) {
-    return new Promise((resolve, reject) => {
-      const timeoutMs = Number.isFinite(Number(options.timeoutMs)) && Number(options.timeoutMs) > 0
-        ? Number(options.timeoutMs)
-        : requestTimeoutMs;
-      const data = JSON.stringify({ method, params, timeoutMs });
-      const req = http.request({
-        hostname: 'localhost',
-        port: port + 1,
-        path: '/request',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(data),
-        },
-        timeout: timeoutMs,
-      }, (res) => {
-        let body = '';
-        res.on('data', (chunk) => {
-          body += chunk;
-        });
-        res.on('end', () => {
-          try {
-            const response = JSON.parse(body || '{}');
-            if (response.error) {
-              reject(createReadableBridgeError(new Error(response.error)));
-            } else {
-              resolve(response.result);
-            }
-          } catch (error) {
-            reject(createReadableBridgeError(error));
-          }
-        });
-      });
-
-      req.on('error', (error) => reject(createReadableBridgeError(error)));
-      req.on('timeout', () => {
-        req.destroy();
-        debug('HTTP forwarded request timed out', { method, timeoutMs });
-        reject(createReadableBridgeError(new Error(`Request timeout: ${method}`)));
-      });
-      req.write(data);
-      req.end();
-    });
-  }
-
-  function sendViaHttp(method, params) {
-    return new Promise((resolve, reject) => {
-      const data = JSON.stringify({ method, params });
-      const req = http.request({
-        hostname: 'localhost',
-        port: port + 1,
-        path: '/send',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(data),
-        },
-        timeout: 5000,
-      }, (res) => {
-        let body = '';
-        res.on('data', (chunk) => {
-          body += chunk;
-        });
-        res.on('end', () => {
-          try {
-            const response = JSON.parse(body || '{}');
-            if (response.error) {
-              reject(createReadableBridgeError(new Error(response.error)));
-            } else {
-              resolve(response.result);
-            }
-          } catch (error) {
-            reject(createReadableBridgeError(error));
-          }
-        });
-      });
-
-      req.on('error', (error) => reject(createReadableBridgeError(error)));
-      req.on('timeout', () => {
-        req.destroy();
-        reject(createReadableBridgeError(new Error('Primary bridge send timeout.')));
-      });
-      req.write(data);
-      req.end();
-    });
   }
 
   async function request(method, params, options = {}) {
     await start();
-    if (isServerMode) {
-      return requestInternal(method, params, options);
-    }
-    return requestViaHttp(method, params, options);
+    return requestInternal(method, params, options);
   }
 
   async function requestWithMethodFallback(method, fallbackMethod, params, options = {}) {
@@ -784,10 +969,7 @@ function createWechatSyncBridgeService(options = {}) {
 
   async function send(method, params) {
     await start();
-    if (isServerMode) {
-      return sendInternal(method, params);
-    }
-    return sendViaHttp(method, params);
+    return sendInternal(method, params);
   }
 
   function listPlatforms({ forceRefresh = false, timeoutMs = DEFAULT_PLATFORM_REQUEST_TIMEOUT_MS } = {}) {
@@ -874,11 +1056,46 @@ function createWechatSyncBridgeService(options = {}) {
   }
 
   async function getStatus() {
-    if (isServerMode) {
-      return { mode: 'primary', connected: isPrimaryConnected(), port };
-    }
-    const health = await checkPrimaryHealth();
-    return { mode: 'secondary', connected: !!health.connected, port, error: health.error };
+    return {
+      mode: 'primary',
+      connected: isAuthenticatedConnected(),
+      authenticated: isAuthenticatedConnected(),
+      pendingConnections: pendingConnections.size,
+      host: bindHost,
+      allowRemote: !!allowRemote,
+      allowLegacyUnauthenticated: !!allowLegacyUnauthenticated,
+      port,
+      diagnostics: getDiagnostics(),
+    };
+  }
+
+  function getDiagnostics() {
+    return {
+      socketsOpened: diagnostics.socketsOpened,
+      helloAttempts: diagnostics.helloAttempts,
+      helloRejections: diagnostics.helloRejections,
+      helloSuccesses: diagnostics.helloSuccesses,
+      pendingConnections: pendingConnections.size,
+      lastHelloRejection: diagnostics.lastHelloRejection
+        ? { ...diagnostics.lastHelloRejection, details: { ...(diagnostics.lastHelloRejection.details || {}) } }
+        : null,
+    };
+  }
+
+  function getActiveClientDescriptor() {
+    if (!activeClient) return null;
+    return {
+      connectionId: activeClient.connectionId,
+      extensionInstanceId: activeClient.extensionInstanceId,
+      extensionId: activeClient.extensionId,
+      version: activeClient.version,
+      profileLabel: activeClient.profileLabel,
+      browserName: activeClient.browserName,
+      capabilities: { ...(activeClient.capabilities || {}) },
+      connectedAt: activeClient.connectedAt,
+      authenticatedAt: activeClient.authenticatedAt,
+      origin: activeClient.origin,
+    };
   }
 
   return {
@@ -886,6 +1103,8 @@ function createWechatSyncBridgeService(options = {}) {
     stop,
     waitForConnection,
     getStatus,
+    getDiagnostics,
+    getActiveClientDescriptor,
     health,
     listSupportedPlatforms,
     listPlatforms,
@@ -905,8 +1124,16 @@ function createWechatSyncBridgeService(options = {}) {
 module.exports = {
   DEFAULT_WECHATSYNC_PORT,
   DEFAULT_SYNC_REQUEST_TIMEOUT_MS,
+  DEFAULT_HELLO_TIMEOUT_MS,
+  LOCAL_BIND_HOST,
+  REMOTE_BIND_HOST,
+  HELLO_ERROR_TOKEN_MISMATCH,
+  HELLO_ERROR_INVALID_PAYLOAD,
+  HELLO_ERROR_TIMEOUT,
+  HELLO_ERROR_VERSION_UNSUPPORTED,
   createReadableBridgeError,
   createWechatSyncBridgeService,
+  isOriginAllowedForWebSocket,
   isRecoverableBridgeConnectionError,
   isUnsupportedBridgeMethodError,
   parseWebSocketFrames,

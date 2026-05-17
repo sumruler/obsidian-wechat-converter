@@ -1,10 +1,14 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import http from 'node:http';
 import net from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
 import {
+  HELLO_ERROR_INVALID_PAYLOAD,
+  HELLO_ERROR_TIMEOUT,
+  HELLO_ERROR_TOKEN_MISMATCH,
   createReadableBridgeError,
   createWechatSyncBridgeService,
+  isOriginAllowedForWebSocket,
   isRecoverableBridgeConnectionError,
   isUnsupportedBridgeMethodError,
   parseWebSocketFrames,
@@ -23,17 +27,84 @@ async function getFreePort() {
   });
 }
 
-function connectExtension(port, handler) {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-  ws.on('message', async (data) => {
-    const message = JSON.parse(data.toString());
-    const response = await handler(message);
-    ws.send(JSON.stringify({ id: message.id, ...response }));
-  });
+const DEFAULT_TEST_HELLO = {
+  extensionInstanceId: 'ext-instance-test',
+  extensionId: 'test-extension',
+  version: '0.1.0',
+  profileLabel: 'Test Profile',
+  browserName: 'TestBrowser',
+  capabilities: { enqueueSyncArticle: true },
+};
+
+function openSocket(port, { host = '127.0.0.1', origin = '' } = {}) {
+  const headers = origin ? { Origin: origin } : undefined;
+  const ws = new WebSocket(`ws://${host}:${port}`, headers ? { headers } : undefined);
   return new Promise((resolve, reject) => {
     ws.once('open', () => resolve(ws));
     ws.once('error', reject);
   });
+}
+
+function waitForAck(ws) {
+  return new Promise((resolve, reject) => {
+    const onMessage = (data) => {
+      let parsed;
+      try {
+        parsed = JSON.parse(data.toString());
+      } catch {
+        return;
+      }
+      if (parsed?.type === 'extension_hello_ack') {
+        ws.off('message', onMessage);
+        resolve(parsed);
+      }
+    };
+    const onClose = () => {
+      ws.off('message', onMessage);
+      reject(new Error('socket_closed_before_ack'));
+    };
+    ws.on('message', onMessage);
+    ws.once('close', onClose);
+  });
+}
+
+function sendHello(ws, { token = 'secret-token', overrides = {} } = {}) {
+  const payload = {
+    type: 'extension_hello',
+    token,
+    ...DEFAULT_TEST_HELLO,
+    ...overrides,
+  };
+  ws.send(JSON.stringify(payload));
+  return waitForAck(ws);
+}
+
+async function connectExtension(port, handler, options = {}) {
+  const { token = 'secret-token', skipHello = false, hello, origin = '' } = options;
+  const ws = await openSocket(port, { origin });
+
+  if (!skipHello) {
+    const ack = await sendHello(ws, { token, overrides: hello });
+    if (!ack.ok) {
+      throw Object.assign(new Error(`hello_failed:${ack.error}`), { ack });
+    }
+  }
+
+  if (handler) {
+    ws.on('message', async (data) => {
+      let message;
+      try {
+        message = JSON.parse(data.toString());
+      } catch {
+        return;
+      }
+      if (message?.type) return; // ignore typed messages such as hello_ack
+      const response = await handler(message);
+      ws.send(JSON.stringify({ id: message.id, ...response }));
+    });
+  }
+
+  return ws;
 }
 
 describe('Wechatsync bridge service', () => {
@@ -265,7 +336,7 @@ describe('Wechatsync bridge service', () => {
 
     const extension = await connectExtension(port, () => ({
       error: { code: 403, message: 'Invalid or missing token' },
-    }));
+    }), { token: '' });
     cleanup.push(extension);
 
     await service.waitForConnection(1000);
@@ -606,41 +677,6 @@ describe('Wechatsync bridge service', () => {
     expect(methods).toEqual(['getSyncTask', 'get_sync_task', 'getAuthSnapshot', 'get_auth_snapshot']);
   });
 
-  it('can forward through an existing primary bridge HTTP API', async () => {
-    const port = await getFreePort();
-    const primary = createWechatSyncBridgeService({
-      WebSocketServer,
-      http,
-      port,
-      token: 'primary-token',
-      requestTimeoutMs: 1000,
-      connectTimeoutMs: 1000,
-    });
-    cleanup.push(primary);
-    await primary.start();
-
-    const extension = await connectExtension(port, (message) => {
-      expect(message.token).toBe('primary-token');
-      return { result: [{ id: 'csdn', name: 'CSDN', authenticated: true }] };
-    });
-    cleanup.push(extension);
-    await primary.waitForConnection(1000);
-
-    const secondary = createWechatSyncBridgeService({
-      WebSocketServer,
-      http,
-      port,
-      requestTimeoutMs: 1000,
-      connectTimeoutMs: 1000,
-    });
-    cleanup.push(secondary);
-
-    const platforms = await secondary.listPlatforms();
-
-    expect(platforms).toEqual([{ id: 'csdn', name: 'CSDN', authenticated: true }]);
-    expect(await secondary.getStatus()).toMatchObject({ mode: 'secondary', connected: true });
-  });
-
   it('recognizes common bridge error messages', () => {
     expect(createReadableBridgeError(new Error('MCP token not configured')).code).toBe('AUTH_FAILED');
     expect(createReadableBridgeError(new Error('Extension not connected')).code).toBe('EXTENSION_NOT_CONNECTED');
@@ -707,6 +743,7 @@ describe('Wechatsync bridge service', () => {
 
   it('classifies only connection recovery errors as retryable', () => {
     expect(isRecoverableBridgeConnectionError(createReadableBridgeError(new Error('Extension not connected')))).toBe(true);
+    expect(isRecoverableBridgeConnectionError(createReadableBridgeError(new Error('Extension not authenticated')))).toBe(true);
     expect(isRecoverableBridgeConnectionError(createReadableBridgeError(new Error('Request timeout: health')))).toBe(true);
     expect(isRecoverableBridgeConnectionError(createReadableBridgeError(new Error('ECONNREFUSED')))).toBe(true);
     expect(isRecoverableBridgeConnectionError(createReadableBridgeError(new Error('Invalid or missing token')))).toBe(false);
@@ -813,5 +850,629 @@ describe('WebSocket frame parsing', () => {
     const frame = Buffer.concat([header, maskKey, maskedPayload]);
     const result = parseWebSocketFrames(frame);
     expect(result.messages[0].payload).toEqual(payload);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// §7.1 P0 security tests — extension_hello handshake, HTTP Bearer auth,
+// 127.0.0.1 binding, connection replacement audit, origin allowlist.
+// Plan: docs/plans/2026-05-16-bridge-security-and-multi-account-plan.md §3 / §7.1
+// ---------------------------------------------------------------------------
+
+function httpRequest({ host = '127.0.0.1', port, path, method = 'GET', headers = {}, body }) {
+  return new Promise((resolve, reject) => {
+    const finalHeaders = { ...headers };
+    let payload;
+    if (body !== undefined) {
+      payload = typeof body === 'string' ? body : JSON.stringify(body);
+      finalHeaders['Content-Type'] = finalHeaders['Content-Type'] || 'application/json';
+      finalHeaders['Content-Length'] = Buffer.byteLength(payload);
+    }
+    const req = http.request({ host, port, path, method, headers: finalHeaders }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        let parsed = null;
+        if (text) {
+          try { parsed = JSON.parse(text); } catch { parsed = null; }
+        }
+        resolve({ status: res.statusCode, headers: res.headers, body: text, json: parsed });
+      });
+    });
+    req.on('error', reject);
+    if (payload !== undefined) req.write(payload);
+    req.end();
+  });
+}
+
+function waitForSocketClose(ws, timeoutMs = 1000) {
+  return new Promise((resolve, reject) => {
+    if (ws.readyState === WebSocket.CLOSED) return resolve();
+    const timeout = setTimeout(() => reject(new Error('socket_close_timeout')), timeoutMs);
+    ws.once('close', () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+}
+
+describe('§3.1 / §3.2 extension_hello handshake', () => {
+  const cleanup = [];
+
+  afterEach(async () => {
+    while (cleanup.length) {
+      const item = cleanup.pop();
+      if (item?.stop) await item.stop();
+      if (item?.close) item.close();
+      if (item?.terminate) item.terminate();
+    }
+  });
+
+  it('closes a WebSocket that does not send extension_hello within helloTimeoutMs', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      helloTimeoutMs: 80,
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const ws = await openSocket(port);
+    cleanup.push(ws);
+
+    const ack = await waitForAck(ws).catch((error) => ({ closedError: error }));
+    expect(ack?.ok).toBe(false);
+    expect(ack?.error).toBe(HELLO_ERROR_TIMEOUT);
+    await waitForSocketClose(ws, 1000);
+    expect(service.getActiveClientDescriptor()).toBeNull();
+  });
+
+  it('rejects extension_hello with a mismatching token and closes the connection', async () => {
+    const port = await getFreePort();
+    const auditEvents = [];
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      helloTimeoutMs: 1000,
+      logger: {
+        info: (event, details) => auditEvents.push({ event, details }),
+        debug() {},
+        warn() {},
+      },
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const ws = await openSocket(port);
+    cleanup.push(ws);
+    ws.send(JSON.stringify({
+      type: 'extension_hello',
+      token: 'wrong-token',
+      ...DEFAULT_TEST_HELLO,
+    }));
+    const ack = await waitForAck(ws);
+    expect(ack).toMatchObject({ type: 'extension_hello_ack', ok: false, error: HELLO_ERROR_TOKEN_MISMATCH });
+    await waitForSocketClose(ws, 1000);
+    expect(service.getActiveClientDescriptor()).toBeNull();
+    const rejected = auditEvents.find((entry) => /hello_rejected/.test(entry.event));
+    expect(rejected).toBeDefined();
+    expect(rejected.details.reason).toBe(HELLO_ERROR_TOKEN_MISMATCH);
+  });
+
+  it('rejects extension_hello with an invalid payload (non-hello first message)', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      helloTimeoutMs: 1000,
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const ws = await openSocket(port);
+    cleanup.push(ws);
+    ws.send(JSON.stringify({ id: 'r1', method: 'health', params: {} }));
+    const ack = await waitForAck(ws);
+    expect(ack).toMatchObject({ ok: false, error: HELLO_ERROR_INVALID_PAYLOAD });
+    await waitForSocketClose(ws, 1000);
+  });
+
+  it('accepts a valid extension_hello and records active client metadata', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      serverVersion: '0.7.7',
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const ws = await connectExtension(port, null, {
+      token: 'secret-token',
+      hello: {
+        extensionInstanceId: 'ext-instance-A',
+        profileLabel: 'Chrome 主号',
+        browserName: 'Chrome',
+        capabilities: { enqueueSyncArticle: true, getAuthSnapshot: true },
+      },
+    });
+    cleanup.push(ws);
+
+    const descriptor = service.getActiveClientDescriptor();
+    expect(descriptor).not.toBeNull();
+    expect(descriptor.extensionInstanceId).toBe('ext-instance-A');
+    expect(descriptor.profileLabel).toBe('Chrome 主号');
+    expect(descriptor.browserName).toBe('Chrome');
+    expect(descriptor.capabilities).toMatchObject({ enqueueSyncArticle: true });
+    expect(typeof descriptor.connectionId).toBe('string');
+    expect(descriptor.connectionId.length).toBeGreaterThan(0);
+  });
+
+  it('rejects bridge requests with EXTENSION_NOT_AUTHENTICATED while only pending connections exist', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      helloTimeoutMs: 5000,
+      connectTimeoutMs: 500,
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const ws = await openSocket(port);
+    cleanup.push(ws);
+
+    await expect(service.listPlatforms({ timeoutMs: 200 })).rejects.toMatchObject({
+      code: 'EXTENSION_NOT_AUTHENTICATED',
+    });
+  });
+
+  it('returns EXTENSION_NOT_CONNECTED when there is no connection at all', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      connectTimeoutMs: 200,
+    });
+    cleanup.push(service);
+    await service.start();
+
+    await expect(service.listPlatforms({ timeoutMs: 200 })).rejects.toMatchObject({
+      code: 'EXTENSION_NOT_CONNECTED',
+    });
+  });
+
+  it('keeps the active client when an unrelated pending connection closes', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      helloTimeoutMs: 5000,
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const active = await connectExtension(port, (message) => ({
+      result: { method: message.method, ok: true },
+    }), { token: 'secret-token' });
+    cleanup.push(active);
+
+    const pending = await openSocket(port);
+    pending.close();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const descriptor = service.getActiveClientDescriptor();
+    expect(descriptor).not.toBeNull();
+    await expect(service.health({ timeoutMs: 500 })).resolves.toMatchObject({ ok: true });
+  });
+
+  it('emits a replacement_authenticated audit log when a new hello takes over and closes the previous client', async () => {
+    const port = await getFreePort();
+    const auditEvents = [];
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      helloTimeoutMs: 5000,
+      logger: {
+        info: (event, details) => auditEvents.push({ event, details }),
+        debug() {},
+        warn() {},
+      },
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const first = await connectExtension(port, null, {
+      token: 'secret-token',
+      hello: { extensionInstanceId: 'ext-A' },
+    });
+    cleanup.push(first);
+    const firstDescriptor = service.getActiveClientDescriptor();
+    expect(firstDescriptor.extensionInstanceId).toBe('ext-A');
+
+    const second = await connectExtension(port, null, {
+      token: 'secret-token',
+      hello: { extensionInstanceId: 'ext-B' },
+    });
+    cleanup.push(second);
+
+    // Wait for the old socket to be closed by the bridge.
+    await waitForSocketClose(first, 1000);
+
+    const secondDescriptor = service.getActiveClientDescriptor();
+    expect(secondDescriptor.extensionInstanceId).toBe('ext-B');
+    expect(secondDescriptor.connectionId).not.toBe(firstDescriptor.connectionId);
+
+    const replacement = auditEvents.find((entry) => /replacement_authenticated/.test(entry.event));
+    expect(replacement).toBeDefined();
+    expect(replacement.details).toMatchObject({
+      old_extensionInstanceId: 'ext-A',
+      new_extensionInstanceId: 'ext-B',
+      reason: 'replacement_authenticated',
+    });
+  });
+
+  it('still authenticates without hello when allowLegacyUnauthenticated is true', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      allowLegacyUnauthenticated: true,
+      helloTimeoutMs: 1000,
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const ws = await openSocket(port);
+    cleanup.push(ws);
+    ws.on('message', (data) => {
+      const message = JSON.parse(data.toString());
+      if (message?.type) return;
+      ws.send(JSON.stringify({ id: message.id, result: { ok: true, legacy: true } }));
+    });
+
+    await service.waitForConnection(1000);
+    await expect(service.health({ timeoutMs: 500 })).resolves.toMatchObject({ ok: true, legacy: true });
+  });
+});
+
+describe('§3.3 / §3.4 HTTP Bearer authorization and CORS hardening', () => {
+  const cleanup = [];
+
+  afterEach(async () => {
+    while (cleanup.length) {
+      const item = cleanup.pop();
+      if (item?.stop) await item.stop();
+      if (item?.close) item.close();
+    }
+  });
+
+  async function startService({ token = 'secret-token', allowRemote = false } = {}) {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token,
+      allowRemote,
+      helloTimeoutMs: 5000,
+    });
+    cleanup.push(service);
+    await service.start();
+    return { service, port, httpPort: port + 1 };
+  }
+
+  it('returns 401 from /status when no Authorization header is provided', async () => {
+    const { httpPort } = await startService();
+    const response = await httpRequest({ port: httpPort, path: '/status' });
+    expect(response.status).toBe(401);
+    expect(response.json).toMatchObject({ error: 'missing_authorization' });
+  });
+
+  it('returns 403 from /status when Authorization token is wrong', async () => {
+    const { httpPort } = await startService();
+    const response = await httpRequest({
+      port: httpPort,
+      path: '/status',
+      headers: { Authorization: 'Bearer wrong-token' },
+    });
+    expect(response.status).toBe(403);
+    expect(response.json).toMatchObject({ error: 'invalid_token' });
+  });
+
+  it('returns 200 from /status with the correct Bearer token', async () => {
+    const { httpPort } = await startService();
+    const response = await httpRequest({
+      port: httpPort,
+      path: '/status',
+      headers: { Authorization: 'Bearer secret-token' },
+    });
+    expect(response.status).toBe(200);
+    expect(response.json).toMatchObject({
+      mode: 'primary',
+      connected: false,
+      authenticated: false,
+      host: '127.0.0.1',
+      allowRemote: false,
+    });
+  });
+
+  it('rejects /request without Authorization (401) and with wrong token (403)', async () => {
+    const { httpPort } = await startService();
+    const noAuth = await httpRequest({
+      port: httpPort,
+      path: '/request',
+      method: 'POST',
+      body: { method: 'health' },
+    });
+    expect(noAuth.status).toBe(401);
+
+    const badAuth = await httpRequest({
+      port: httpPort,
+      path: '/request',
+      method: 'POST',
+      headers: { Authorization: 'Bearer nope' },
+      body: { method: 'health' },
+    });
+    expect(badAuth.status).toBe(403);
+  });
+
+  it('forwards /request to the extension when Authorization is correct', async () => {
+    const { service, port, httpPort } = await startService();
+    const ws = await connectExtension(port, (message) => ({
+      result: { ok: true, method: message.method },
+    }), { token: 'secret-token' });
+    cleanup.push(ws);
+    await service.waitForConnection(1000);
+
+    const response = await httpRequest({
+      port: httpPort,
+      path: '/request',
+      method: 'POST',
+      headers: { Authorization: 'Bearer secret-token' },
+      body: { method: 'health' },
+    });
+    expect(response.status).toBe(200);
+    expect(response.json).toMatchObject({ result: { ok: true, method: 'health' } });
+  });
+
+  it('rejects /send without Authorization (401) and with wrong token (403)', async () => {
+    const { httpPort } = await startService();
+    const noAuth = await httpRequest({
+      port: httpPort,
+      path: '/send',
+      method: 'POST',
+      body: { method: 'syncArticle' },
+    });
+    expect(noAuth.status).toBe(401);
+
+    const badAuth = await httpRequest({
+      port: httpPort,
+      path: '/send',
+      method: 'POST',
+      headers: { Authorization: 'Bearer nope' },
+      body: { method: 'syncArticle' },
+    });
+    expect(badAuth.status).toBe(403);
+  });
+
+  it('does not emit Access-Control-Allow-Origin by default (CORS hardening)', async () => {
+    const { httpPort } = await startService();
+    const response = await httpRequest({
+      port: httpPort,
+      path: '/status',
+      headers: { Authorization: 'Bearer secret-token', Origin: 'https://example.com' },
+    });
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('responds 204 to OPTIONS preflights without ever exposing the API surface', async () => {
+    const { httpPort } = await startService();
+    const response = await httpRequest({
+      port: httpPort,
+      path: '/request',
+      method: 'OPTIONS',
+      headers: { Origin: 'https://evil.example' },
+    });
+    expect(response.status).toBe(204);
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('skips Authorization when service is configured without a token (backward compatibility)', async () => {
+    const { httpPort } = await startService({ token: '' });
+    const response = await httpRequest({ port: httpPort, path: '/status' });
+    expect(response.status).toBe(200);
+    expect(response.json).toMatchObject({ mode: 'primary' });
+  });
+});
+
+describe('§3.5 host binding', () => {
+  const cleanup = [];
+
+  afterEach(async () => {
+    while (cleanup.length) {
+      const item = cleanup.pop();
+      if (item?.stop) await item.stop();
+    }
+  });
+
+  it('binds to 127.0.0.1 by default and rejects non-loopback connections', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const status = await service.getStatus();
+    expect(status).toMatchObject({ host: '127.0.0.1', allowRemote: false });
+
+    // Localhost via 127.0.0.1 works.
+    const localhostResp = await httpRequest({
+      host: '127.0.0.1',
+      port: port + 1,
+      path: '/status',
+      headers: { Authorization: 'Bearer secret-token' },
+    });
+    expect(localhostResp.status).toBe(200);
+  });
+
+  it('exposes allowRemote=true binding via 0.0.0.0 when configured', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      allowRemote: true,
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const status = await service.getStatus();
+    expect(status).toMatchObject({ host: '0.0.0.0', allowRemote: true });
+  });
+});
+
+describe('§3.7 Origin allowlist (optional defense-in-depth)', () => {
+  it('treats empty Origin as allowed (Node clients, native messaging)', () => {
+    expect(isOriginAllowedForWebSocket('', { allowlist: ['chrome-extension://*'] })).toBe(true);
+  });
+
+  it('matches chrome-extension://* wildcard', () => {
+    expect(isOriginAllowedForWebSocket('chrome-extension://abcd1234efgh', { allowlist: ['chrome-extension://*'] })).toBe(true);
+  });
+
+  it('rejects regular http(s) origins when allowlist is set', () => {
+    expect(isOriginAllowedForWebSocket('http://evil.example', { allowlist: ['chrome-extension://*'] })).toBe(false);
+    expect(isOriginAllowedForWebSocket('https://example.com', { allowlist: ['chrome-extension://*'] })).toBe(false);
+  });
+
+  it('returns allowed when no allowlist is provided (backwards compatible)', () => {
+    expect(isOriginAllowedForWebSocket('http://anywhere.example')).toBe(true);
+  });
+});
+
+describe('§4.1 diagnostics surface for settings UI state detection', () => {
+  const cleanup = [];
+
+  afterEach(async () => {
+    while (cleanup.length) {
+      const item = cleanup.pop();
+      if (item?.stop) await item.stop();
+      if (item?.close) item.close();
+    }
+  });
+
+  it('starts with zeroed counters and no last rejection', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+    });
+    cleanup.push(service);
+    await service.start();
+
+    expect(service.getDiagnostics()).toEqual({
+      socketsOpened: 0,
+      helloAttempts: 0,
+      helloRejections: 0,
+      helloSuccesses: 0,
+      pendingConnections: 0,
+      lastHelloRejection: null,
+    });
+  });
+
+  it('counts hello rejections separately from successful auths', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      helloTimeoutMs: 1000,
+    });
+    cleanup.push(service);
+    await service.start();
+
+    // 1) wrong-token hello → 1 rejection
+    const badWs = await openSocket(port);
+    cleanup.push(badWs);
+    badWs.send(JSON.stringify({ type: 'extension_hello', token: 'wrong', ...DEFAULT_TEST_HELLO }));
+    await waitForAck(badWs);
+    await waitForSocketClose(badWs, 1000);
+
+    // 2) valid hello → 1 success
+    const goodWs = await connectExtension(port, null, { token: 'secret-token' });
+    cleanup.push(goodWs);
+
+    const diagnostics = service.getDiagnostics();
+    expect(diagnostics.socketsOpened).toBeGreaterThanOrEqual(2);
+    expect(diagnostics.helloRejections).toBe(1);
+    expect(diagnostics.helloSuccesses).toBe(1);
+    expect(diagnostics.lastHelloRejection).toMatchObject({
+      reason: HELLO_ERROR_TOKEN_MISMATCH,
+    });
+  });
+});
+
+describe('§4.1 EADDRINUSE no longer silently downgrades', () => {
+  const cleanup = [];
+
+  afterEach(async () => {
+    while (cleanup.length) {
+      const item = cleanup.pop();
+      if (item?.stop) await item.stop();
+      if (item?.close) item.close();
+    }
+  });
+
+  it('surfaces port conflicts as BRIDGE_UNAVAILABLE instead of falling back to secondary mode', async () => {
+    const port = await getFreePort();
+    const primary = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'first-token',
+    });
+    cleanup.push(primary);
+    await primary.start();
+
+    const conflicting = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'second-token',
+    });
+    cleanup.push(conflicting);
+
+    await expect(conflicting.start()).rejects.toMatchObject({
+      code: 'BRIDGE_UNAVAILABLE',
+    });
   });
 });

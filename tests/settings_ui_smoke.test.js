@@ -312,4 +312,76 @@ describe('AppleStyleSettingTab.display - smoke test', () => {
     expect(names).not.toContain('测试连接');
     expect(names).not.toContain('读取已选平台状态');
   });
+
+  // Sprint 1 §4.1: settings UI introduces three new visible affordances:
+  //   1. token state badge (未填 / 已填 / 已验证)
+  //   2. "允许远程访问（高级）" toggle controlling bind host
+  //   3. "兼容旧版浏览器插件（过渡）" toggle for the Sprint 1 → Sprint 3 window
+  // These tests pin the names + state badge so future refactors can't silently
+  // drop them.
+
+  it('renders Sprint 1 §3.5 / §3.1 advanced toggles when bridge is enabled', () => {
+    renderTab(makePlugin({ multiPlatformSync: {
+      enabled: true,
+      port: 9527,
+      token: 'abc',
+      allowRemote: false,
+      allowLegacyUnauthenticated: false,
+      supportedPlatforms: [],
+      selectedPlatforms: [],
+      connection: { status: 'untested', checkedAt: 0, platforms: [], capabilities: {}, message: '' },
+      recentTasks: [],
+    } }));
+    const names = globalThis.__obsidianSettingNamesRegistry;
+    expect(names).toContain('允许远程访问（高级）');
+    expect(names).toContain('兼容旧版浏览器插件（过渡）');
+  });
+
+  it('renders the Sprint 1 §4.1 token-state badge in the "未填" state when token is empty', () => {
+    const tab = renderTab(makePlugin({ multiPlatformSync: {
+      enabled: true,
+      port: 9527,
+      token: '',
+      supportedPlatforms: [],
+      selectedPlatforms: [],
+      connection: { status: 'untested', checkedAt: 0, platforms: [], capabilities: {}, message: '' },
+      recentTasks: [],
+    } }));
+    const dot = tab.containerEl.querySelector('.wechat-multiplatform-token-status-dot');
+    expect(dot).not.toBeNull();
+    expect(dot.classList.contains('is-error')).toBe(true);
+    expect(dot.textContent).toBe('未填');
+  });
+
+  it('renders the Sprint 1 §4.1 token-state badge in the "已填" state when token is set but unverified', () => {
+    const tab = renderTab(makePlugin({ multiPlatformSync: {
+      enabled: true,
+      port: 9527,
+      token: 'abc-xyz',
+      supportedPlatforms: [],
+      selectedPlatforms: [],
+      connection: { status: 'untested', checkedAt: 0, platforms: [], capabilities: {}, message: '' },
+      recentTasks: [],
+    } }));
+    const dot = tab.containerEl.querySelector('.wechat-multiplatform-token-status-dot');
+    expect(dot).not.toBeNull();
+    expect(dot.classList.contains('is-unknown')).toBe(true);
+    expect(dot.textContent).toBe('已填');
+  });
+
+  it('renders the Sprint 1 §4.1 token-state badge in the "已验证" state when bridge handshake succeeded', () => {
+    const tab = renderTab(makePlugin({ multiPlatformSync: {
+      enabled: true,
+      port: 9527,
+      token: 'abc-xyz',
+      supportedPlatforms: [],
+      selectedPlatforms: [],
+      connection: { status: 'connected', checkedAt: Date.now(), platforms: [], capabilities: {}, message: '' },
+      recentTasks: [],
+    } }));
+    const dot = tab.containerEl.querySelector('.wechat-multiplatform-token-status-dot');
+    expect(dot).not.toBeNull();
+    expect(dot.classList.contains('is-ok')).toBe(true);
+    expect(dot.textContent).toBe('已验证');
+  });
 });

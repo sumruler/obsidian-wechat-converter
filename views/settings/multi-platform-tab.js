@@ -97,11 +97,15 @@ function renderMultiPlatformSettingsTab(tab, containerEl) {
   const proGuideBtn = guideActions.createEl('button', { text: '了解 Pro' });
   proGuideBtn.onclick = () => openExternalUrl(OBSIDIAN_PUBLISHER_PRO_URL);
 
-  new Setting(containerEl)
+  const tokenIsEmpty = !multiPlatformSettings.token;
+  const enableSetting = new Setting(containerEl)
     .setName('启用浏览器插件发布')
-    .setDesc('开启后，Obsidian 会把文章发送给浏览器插件，由插件使用浏览器登录态保存到各平台草稿箱。')
+    .setDesc(tokenIsEmpty
+      ? '请先在下方填入「连接令牌」，否则无法启用浏览器插件发布。'
+      : '开启后，Obsidian 会把文章发送给浏览器插件，由插件使用浏览器登录态保存到各平台草稿箱。')
     .addToggle(toggle => toggle
       .setValue(multiPlatformSettings.enabled)
+      .setDisabled(tokenIsEmpty)
       .onChange(async (value) => {
         plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
           ...plugin.settings.multiPlatformSync,
@@ -117,6 +121,9 @@ function renderMultiPlatformSettingsTab(tab, containerEl) {
         }
         tab.display();
       }));
+  if (tokenIsEmpty) {
+    enableSetting.descEl?.classList?.add?.('wechat-multiplatform-warning');
+  }
 
   if (!multiPlatformSettings.enabled) {
     return;
@@ -154,6 +161,85 @@ function renderMultiPlatformSettingsTab(tab, containerEl) {
         await plugin.saveSettings();
         plugin.startWechatSyncBridgeInBackground('settings-token-change');
       }));
+
+  // §4.1: token 状态指示 — 未填 / 已填 / 已验证
+  {
+    const tokenStatusBar = containerEl.createDiv({ cls: 'wechat-multiplatform-token-status' });
+    const dot = tokenStatusBar.createEl('span', { cls: 'wechat-multiplatform-token-status-dot' });
+    const text = tokenStatusBar.createEl('span', { cls: 'wechat-multiplatform-token-status-text' });
+    if (!multiPlatformSettings.token) {
+      dot.classList?.add?.('is-error');
+      dot.textContent = '未填';
+      text.textContent = '连接令牌尚未填写。请到浏览器插件弹窗复制令牌。';
+    } else if (multiPlatformSettings.connection?.status === 'connected') {
+      dot.classList?.add?.('is-ok');
+      dot.textContent = '已验证';
+      text.textContent = '连接令牌已通过浏览器插件握手验证。';
+    } else {
+      dot.classList?.add?.('is-unknown');
+      dot.textContent = '已填';
+      text.textContent = '连接令牌已填写但尚未通过握手验证。请点击下方「测试连接」。';
+    }
+  }
+
+  // §3.5 + §4.1: 「允许远程访问」高级开关（默认关闭，开启时显示红色警告）
+  {
+    const remoteSetting = new Setting(containerEl)
+      .setName('允许远程访问（高级）')
+      .setDesc(multiPlatformSettings.allowRemote
+        ? '当前监听 0.0.0.0：同网络下的其他设备也能尝试连接，请务必使用强随机连接令牌并保持网络可信。'
+        : '默认仅监听 127.0.0.1（本机回环），其他设备无法连接。仅在你完全理解风险时开启。')
+      .addToggle(toggle => toggle
+        .setValue(multiPlatformSettings.allowRemote)
+        .onChange(async (value) => {
+          plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
+            ...plugin.settings.multiPlatformSync,
+            allowRemote: value,
+            connection: { status: 'untested' },
+          });
+          await plugin.saveSettings();
+          if (plugin._wechatSyncBridgeService?.stop) {
+            await plugin._wechatSyncBridgeService.stop().catch(() => {});
+          }
+          plugin._wechatSyncBridgeService = null;
+          plugin._wechatSyncBridgeCacheKey = null;
+          plugin.startWechatSyncBridgeInBackground('settings-allow-remote-change');
+          tab.display();
+        }));
+    if (multiPlatformSettings.allowRemote) {
+      remoteSetting.descEl?.classList?.add?.('wechat-multiplatform-warning');
+    }
+  }
+
+  // §3.1 兼容策略：旧版浏览器插件不发 extension_hello 时的过渡开关。
+  // 计划文档 §4.3 Sprint 3 完成后会移除此开关。
+  {
+    const legacySetting = new Setting(containerEl)
+      .setName('兼容旧版浏览器插件（过渡）')
+      .setDesc(multiPlatformSettings.allowLegacyUnauthenticated
+        ? '已允许未经握手的旧版浏览器插件连接。注意：此模式没有 extension_hello 安全验证，相当于回到 Sprint 1 之前的行为，浏览器插件升级后请立即关闭。'
+        : '默认关闭。仅在浏览器插件尚未升级到支持安全握手版本时临时开启。Sprint 3 浏览器插件上线后此开关会被移除。')
+      .addToggle(toggle => toggle
+        .setValue(multiPlatformSettings.allowLegacyUnauthenticated)
+        .onChange(async (value) => {
+          plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
+            ...plugin.settings.multiPlatformSync,
+            allowLegacyUnauthenticated: value,
+            connection: { status: 'untested' },
+          });
+          await plugin.saveSettings();
+          if (plugin._wechatSyncBridgeService?.stop) {
+            await plugin._wechatSyncBridgeService.stop().catch(() => {});
+          }
+          plugin._wechatSyncBridgeService = null;
+          plugin._wechatSyncBridgeCacheKey = null;
+          plugin.startWechatSyncBridgeInBackground('settings-allow-legacy-change');
+          tab.display();
+        }));
+    if (multiPlatformSettings.allowLegacyUnauthenticated) {
+      legacySetting.descEl?.classList?.add?.('wechat-multiplatform-warning');
+    }
+  }
 
   const getSupportedPlatformsFromExtension = async (bridge) => {
     const response = await bridge.listSupportedPlatforms({ timeoutMs: 10000 });
@@ -367,11 +453,44 @@ function renderMultiPlatformSettingsTab(tab, containerEl) {
             : '✅ 已连接浏览器插件');
         } catch (error) {
           let bridgeStatusAfterFailure = null;
+          let diagnostics = null;
           try {
             bridgeStatusAfterFailure = await bridge?.getStatus?.();
           } catch (statusError) {
             bridgeStatusAfterFailure = { error: statusError?.message || String(statusError) };
           }
+          try {
+            diagnostics = bridge?.getDiagnostics?.() || null;
+          } catch {
+            diagnostics = null;
+          }
+
+          // §4.1 / §7.1: detect state 3 (extension connected but hello rejected) vs
+          // state 2 (no extension reached the bridge at all) so the user sees an
+          // actionable message instead of the generic timeout text.
+          let detailedMessage = error.message || '浏览器插件连接失败';
+          let hint = '';
+          if (error?.code === 'EXTENSION_NOT_CONNECTED' && diagnostics?.helloRejections > 0) {
+            const last = diagnostics.lastHelloRejection;
+            const reason = last?.reason;
+            if (reason === 'token_mismatch') {
+              detailedMessage = '浏览器插件已连接但握手令牌不匹配。请确认 Obsidian 与浏览器插件使用同一个连接令牌。';
+            } else if (reason === 'hello_timeout') {
+              detailedMessage = '浏览器插件连接后未在限定时间内完成握手。可能扩展版本过旧或未启用握手。';
+            } else if (reason === 'invalid_payload') {
+              detailedMessage = '浏览器插件发送的握手数据格式不正确。请升级浏览器插件到支持安全握手的版本。';
+            } else if (reason === 'version_unsupported') {
+              detailedMessage = '浏览器插件版本与 Obsidian 不兼容，握手被拒绝。请升级浏览器插件。';
+            } else if (reason) {
+              detailedMessage = `浏览器插件握手失败（${reason}）。请检查浏览器插件版本与连接令牌。`;
+            }
+            hint = '';
+          } else if (['EXTENSION_NOT_CONNECTED', 'BRIDGE_UNAVAILABLE', 'BRIDGE_REQUEST_TIMEOUT'].includes(error?.code)) {
+            hint = '请确认浏览器正在运行、已安装浏览器插件，并检查地址、端口和连接令牌与这里一致。';
+          } else if (error?.code === 'EXTENSION_NOT_AUTHENTICATED') {
+            detailedMessage = '浏览器插件已连接但尚未通过认证。请确认插件已升级到支持安全握手的版本，且使用与 Obsidian 一致的连接令牌。';
+          }
+
           console.error('[Wechatsync] test connection failed', {
             elapsedMs: Date.now() - startedAt,
             code: error?.code,
@@ -379,6 +498,8 @@ function renderMultiPlatformSettingsTab(tab, containerEl) {
             stack: error?.stack,
             bridgeStartStatus,
             bridgeStatusAfterFailure,
+            diagnostics,
+            detailedMessage,
           });
           plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
             ...plugin.settings.multiPlatformSync,
@@ -387,14 +508,11 @@ function renderMultiPlatformSettingsTab(tab, containerEl) {
               checkedAt: Date.now(),
               platforms: [],
               capabilities: {},
-              message: error.message || '浏览器插件连接失败',
+              message: detailedMessage,
             },
           });
           await plugin.saveSettings();
-          const hint = ['EXTENSION_NOT_CONNECTED', 'BRIDGE_UNAVAILABLE', 'BRIDGE_REQUEST_TIMEOUT'].includes(error?.code)
-            ? '请确认浏览器正在运行、已安装浏览器插件，并检查地址、端口和连接令牌与这里一致。'
-            : '';
-          new Notice(`❌ 浏览器插件连接失败：${error.message}${hint ? ` ${hint}` : ''}`, 12000);
+          new Notice(`❌ ${detailedMessage}${hint ? ` ${hint}` : ''}`, 12000);
           shouldRedisplay = true;
         } finally {
           button.setDisabled?.(false);

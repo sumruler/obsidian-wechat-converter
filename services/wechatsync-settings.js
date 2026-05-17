@@ -19,6 +19,8 @@ function createDefaultMultiPlatformSyncSettings() {
     enabled: false,
     port: DEFAULT_WECHATSYNC_PORT,
     token: '',
+    allowRemote: false,
+    allowLegacyUnauthenticated: false,
     supportedPlatforms: [],
     selectedPlatforms: [],
     recentTasks: [],
@@ -140,6 +142,8 @@ function normalizeMultiPlatformSyncSettings(value = {}) {
       ? portNumber
       : defaults.port,
     token: typeof source.token === 'string' ? source.token.trim() : '',
+    allowRemote: source.allowRemote === true,
+    allowLegacyUnauthenticated: source.allowLegacyUnauthenticated === true,
     supportedPlatforms,
     selectedPlatforms,
     connection: normalizeMultiPlatformConnection(source.connection),

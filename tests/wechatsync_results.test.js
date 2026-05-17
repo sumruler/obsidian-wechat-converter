@@ -6,6 +6,7 @@ import {
   getWechatSyncResultUrl,
   getFallbackWechatsyncPlatforms,
   getWechatsyncPlatformStatusBadge,
+  isWechatSyncConnectionFailure,
   normalizeWechatSyncResponseResults,
   normalizeWechatsyncAuthSnapshot,
   normalizeWechatsyncCheckAuthResult,
@@ -428,5 +429,28 @@ describe('Wechatsync result helpers', () => {
     expect(displayed).toHaveLength(2);
     expect(displayed[0].id).toBe('zhihu');
     expect(displayed[1].id).toBe('csdn');
+  });
+
+  // Sprint 1 §4.1: ensure EXTENSION_NOT_AUTHENTICATED is treated as a
+  // connection failure so the publish modal / settings UI / status bar
+  // all uniformly persist the failure state and clear the cached client.
+  it('classifies EXTENSION_NOT_AUTHENTICATED as a connection failure', () => {
+    expect(isWechatSyncConnectionFailure({ code: 'EXTENSION_NOT_AUTHENTICATED' })).toBe(true);
+  });
+
+  it('keeps existing connection-failure codes classified as failures', () => {
+    expect(isWechatSyncConnectionFailure({ code: 'EXTENSION_NOT_CONNECTED' })).toBe(true);
+    expect(isWechatSyncConnectionFailure({ code: 'BRIDGE_UNAVAILABLE' })).toBe(true);
+    expect(isWechatSyncConnectionFailure({ code: 'AUTH_FAILED' })).toBe(true);
+    expect(isWechatSyncConnectionFailure({ code: 'PLATFORM_LIST_TIMEOUT' })).toBe(true);
+  });
+
+  it('does not classify unrelated bridge errors as connection failures', () => {
+    expect(isWechatSyncConnectionFailure({ code: 'BRIDGE_REQUEST_TIMEOUT' })).toBe(false);
+    expect(isWechatSyncConnectionFailure({ code: 'UNKNOWN_METHOD' })).toBe(false);
+    expect(isWechatSyncConnectionFailure({ code: '' })).toBe(false);
+    expect(isWechatSyncConnectionFailure({})).toBe(false);
+    expect(isWechatSyncConnectionFailure(null)).toBe(false);
+    expect(isWechatSyncConnectionFailure(undefined)).toBe(false);
   });
 });

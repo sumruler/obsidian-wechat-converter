@@ -481,6 +481,12 @@ async function showMultiPlatformPublishModal(view, options = {}) {
         stack: error?.stack,
         requestedPlatformIds,
       });
+      // §4.1: surface EXTENSION_NOT_AUTHENTICATED with a dedicated message
+      // so users know the extension is reachable but failed the handshake,
+      // rather than reusing the generic "connection failed" copy.
+      const displayMessage = error?.code === 'EXTENSION_NOT_AUTHENTICATED'
+        ? '浏览器插件已连接但未通过握手认证。请确认插件已升级到支持安全握手的版本，且使用与 Obsidian 一致的连接令牌。'
+        : (error?.message || '浏览器插件连接失败');
       if (isWechatSyncConnectionFailure(error)) {
         const currentMultiPlatformSettings = normalizeMultiPlatformSyncSettings(view.plugin.settings.multiPlatformSync);
         view.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
@@ -489,13 +495,13 @@ async function showMultiPlatformPublishModal(view, options = {}) {
             ...currentMultiPlatformSettings.connection,
             status: 'failed',
             checkedAt: Date.now(),
-            message: error.message || '浏览器插件连接失败',
+            message: displayMessage,
           },
         });
         await view.plugin.saveSettings();
       }
       modal.close();
-      new Notice(`❌ 发送到浏览器插件失败：${error.message}`, 10000);
+      new Notice(`❌ 发送到浏览器插件失败：${displayMessage}`, 10000);
       view.showMultiPlatformSyncResultModal({
         requestedPlatformIds,
         fatalError: error,

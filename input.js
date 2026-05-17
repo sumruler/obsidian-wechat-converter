@@ -6612,7 +6612,12 @@ class AppleStylePlugin extends Plugin {
 
   getWechatSyncBridgeService() {
     const settings = normalizeMultiPlatformSyncSettings(this.settings.multiPlatformSync);
-    const cacheKey = `${settings.port}:${settings.token}`;
+    const cacheKey = [
+      settings.port,
+      settings.token,
+      settings.allowRemote ? 1 : 0,
+      settings.allowLegacyUnauthenticated ? 1 : 0,
+    ].join(':');
     if (this._wechatSyncBridgeService && this._wechatSyncBridgeCacheKey === cacheKey) {
       return this._wechatSyncBridgeService;
     }
@@ -6629,6 +6634,9 @@ class AppleStylePlugin extends Plugin {
       http,
       port: settings.port,
       token: settings.token,
+      allowRemote: settings.allowRemote,
+      allowLegacyUnauthenticated: settings.allowLegacyUnauthenticated,
+      serverVersion: this.manifest?.version || '',
     });
     return this._wechatSyncBridgeService;
   }

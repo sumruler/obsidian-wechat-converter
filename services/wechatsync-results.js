@@ -376,7 +376,7 @@ function isWechatSyncAuthFailureMessage(message = '') {
 }
 
 function isWechatSyncConnectionFailure(error = {}) {
-  return ['AUTH_FAILED', 'EXTENSION_NOT_CONNECTED', 'BRIDGE_UNAVAILABLE', 'PLATFORM_LIST_TIMEOUT'].includes(error?.code);
+  return ['AUTH_FAILED', 'EXTENSION_NOT_CONNECTED', 'EXTENSION_NOT_AUTHENTICATED', 'BRIDGE_UNAVAILABLE', 'PLATFORM_LIST_TIMEOUT'].includes(error?.code);
 }
 
 function normalizeWechatSyncResponseResults(result) {
