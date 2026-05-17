@@ -18513,10 +18513,12 @@ var AppleStyleView = class extends ItemView {
         text: (task == null ? void 0 : task.found) === false ? "\u63D2\u4EF6\u6682\u672A\u8FD4\u56DE\u4EFB\u52A1\u8BE6\u60C5" : title || (task == null ? void 0 : task.title) || "\u591A\u5E73\u53F0\u53D1\u5E03\u4EFB\u52A1",
         cls: "wechat-multiplatform-result-name"
       });
-      taskBody.createEl("div", {
-        text: (task == null ? void 0 : task.found) === false ? "\u8BF7\u6253\u5F00\u63D2\u4EF6\u5386\u53F2\u67E5\u770B\u3002" : "\u540E\u7EED\u72B6\u6001\u4EE5\u63D2\u4EF6\u4EFB\u52A1\u7A97\u53E3\u4E3A\u51C6\u3002",
-        cls: "wechat-multiplatform-result-detail"
-      });
+      if ((task == null ? void 0 : task.found) === false) {
+        taskBody.createEl("div", {
+          text: "\u8BF7\u6253\u5F00\u63D2\u4EF6\u5386\u53F2\u67E5\u770B\u3002",
+          cls: "wechat-multiplatform-result-detail"
+        });
+      }
     }
     for (const item of taskPlatforms) {
       const platformId = String((item == null ? void 0 : item.id) || (item == null ? void 0 : item.platform) || item || "").trim();
@@ -18527,10 +18529,6 @@ var AppleStyleView = class extends ItemView {
       row.createEl("div", { text: "\u5DF2\u6295\u9012", cls: "wechat-multiplatform-result-pill" });
       const body = row.createDiv({ cls: "wechat-multiplatform-result-body" });
       body.createEl("div", { text: platformName, cls: "wechat-multiplatform-result-name" });
-      body.createEl("div", {
-        text: "\u5DF2\u8FDB\u5165\u63D2\u4EF6\u961F\u5217\uFF0C\u540E\u7EED\u72B6\u6001\u4EE5\u63D2\u4EF6\u4EFB\u52A1\u7A97\u53E3\u4E3A\u51C6\u3002",
-        cls: "wechat-multiplatform-result-detail"
-      });
     }
     for (const platformId of sortPlatformItems(skippedPlatformIds)) {
       const platformName = ((_g = platformById.get(platformId)) == null ? void 0 : _g.name) || platformId;

@@ -4247,12 +4247,12 @@ class AppleStyleView extends ItemView {
         text: task?.found === false ? '插件暂未返回任务详情' : (title || task?.title || '多平台发布任务'),
         cls: 'wechat-multiplatform-result-name',
       });
-      taskBody.createEl('div', {
-        text: task?.found === false
-          ? '请打开插件历史查看。'
-          : '后续状态以插件任务窗口为准。',
-        cls: 'wechat-multiplatform-result-detail',
-      });
+      if (task?.found === false) {
+        taskBody.createEl('div', {
+          text: '请打开插件历史查看。',
+          cls: 'wechat-multiplatform-result-detail',
+        });
+      }
     }
 
     for (const item of taskPlatforms) {
@@ -4263,10 +4263,6 @@ class AppleStyleView extends ItemView {
       row.createEl('div', { text: '已投递', cls: 'wechat-multiplatform-result-pill' });
       const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
       body.createEl('div', { text: platformName, cls: 'wechat-multiplatform-result-name' });
-      body.createEl('div', {
-        text: '已进入插件队列，后续状态以插件任务窗口为准。',
-        cls: 'wechat-multiplatform-result-detail',
-      });
     }
 
     for (const platformId of sortPlatformItems(skippedPlatformIds)) {
