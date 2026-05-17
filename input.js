@@ -4249,8 +4249,8 @@ class AppleStyleView extends ItemView {
       });
       taskBody.createEl('div', {
         text: task?.found === false
-          ? `syncId：${taskId}。请打开插件历史查看。`
-          : `syncId：${taskId}${task?.summary ? ` · ${task.summary.success || 0} 成功 / ${task.summary.failed || 0} 失败 / ${task.summary.pending || 0} 处理中` : ''}`,
+          ? '请打开插件历史查看。'
+          : '后续状态以插件任务窗口为准。',
         cls: 'wechat-multiplatform-result-detail',
       });
     }
@@ -4259,22 +4259,12 @@ class AppleStyleView extends ItemView {
       const platformId = String(item?.id || item?.platform || item || '').trim();
       if (!platformId) continue;
       const platformName = item?.name || platformById.get(platformId)?.name || platformId;
-      const status = String(item?.status || 'queued');
-      const isFailed = status === 'failed';
-      const isSuccess = status === 'success';
-      const row = list.createDiv({
-        cls: `wechat-multiplatform-result-row ${isFailed ? 'is-error' : (isSuccess ? 'is-success' : '')}`,
-      });
-      row.createEl('div', {
-        text: isSuccess ? '成功' : (isFailed ? '失败' : '已投递'),
-        cls: `wechat-multiplatform-result-pill ${isFailed ? 'is-error' : (isSuccess ? 'is-success' : '')}`,
-      });
+      const row = list.createDiv({ cls: 'wechat-multiplatform-result-row' });
+      row.createEl('div', { text: '已投递', cls: 'wechat-multiplatform-result-pill' });
       const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
       body.createEl('div', { text: platformName, cls: 'wechat-multiplatform-result-name' });
       body.createEl('div', {
-        text: item?.error || (isSuccess
-          ? '插件已保存草稿。'
-          : (isFailed ? '插件返回失败，请打开任务查看详情。' : '已进入插件队列，后续状态以插件任务窗口为准。')),
+        text: '已进入插件队列，后续状态以插件任务窗口为准。',
         cls: 'wechat-multiplatform-result-detail',
       });
     }

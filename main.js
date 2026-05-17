@@ -18514,7 +18514,7 @@ var AppleStyleView = class extends ItemView {
         cls: "wechat-multiplatform-result-name"
       });
       taskBody.createEl("div", {
-        text: (task == null ? void 0 : task.found) === false ? `syncId\uFF1A${taskId}\u3002\u8BF7\u6253\u5F00\u63D2\u4EF6\u5386\u53F2\u67E5\u770B\u3002` : `syncId\uFF1A${taskId}${(task == null ? void 0 : task.summary) ? ` \xB7 ${task.summary.success || 0} \u6210\u529F / ${task.summary.failed || 0} \u5931\u8D25 / ${task.summary.pending || 0} \u5904\u7406\u4E2D` : ""}`,
+        text: (task == null ? void 0 : task.found) === false ? "\u8BF7\u6253\u5F00\u63D2\u4EF6\u5386\u53F2\u67E5\u770B\u3002" : "\u540E\u7EED\u72B6\u6001\u4EE5\u63D2\u4EF6\u4EFB\u52A1\u7A97\u53E3\u4E3A\u51C6\u3002",
         cls: "wechat-multiplatform-result-detail"
       });
     }
@@ -18523,20 +18523,12 @@ var AppleStyleView = class extends ItemView {
       if (!platformId)
         continue;
       const platformName = (item == null ? void 0 : item.name) || ((_f = platformById.get(platformId)) == null ? void 0 : _f.name) || platformId;
-      const status = String((item == null ? void 0 : item.status) || "queued");
-      const isFailed = status === "failed";
-      const isSuccess = status === "success";
-      const row = list.createDiv({
-        cls: `wechat-multiplatform-result-row ${isFailed ? "is-error" : isSuccess ? "is-success" : ""}`
-      });
-      row.createEl("div", {
-        text: isSuccess ? "\u6210\u529F" : isFailed ? "\u5931\u8D25" : "\u5DF2\u6295\u9012",
-        cls: `wechat-multiplatform-result-pill ${isFailed ? "is-error" : isSuccess ? "is-success" : ""}`
-      });
+      const row = list.createDiv({ cls: "wechat-multiplatform-result-row" });
+      row.createEl("div", { text: "\u5DF2\u6295\u9012", cls: "wechat-multiplatform-result-pill" });
       const body = row.createDiv({ cls: "wechat-multiplatform-result-body" });
       body.createEl("div", { text: platformName, cls: "wechat-multiplatform-result-name" });
       body.createEl("div", {
-        text: (item == null ? void 0 : item.error) || (isSuccess ? "\u63D2\u4EF6\u5DF2\u4FDD\u5B58\u8349\u7A3F\u3002" : isFailed ? "\u63D2\u4EF6\u8FD4\u56DE\u5931\u8D25\uFF0C\u8BF7\u6253\u5F00\u4EFB\u52A1\u67E5\u770B\u8BE6\u60C5\u3002" : "\u5DF2\u8FDB\u5165\u63D2\u4EF6\u961F\u5217\uFF0C\u540E\u7EED\u72B6\u6001\u4EE5\u63D2\u4EF6\u4EFB\u52A1\u7A97\u53E3\u4E3A\u51C6\u3002"),
+        text: "\u5DF2\u8FDB\u5165\u63D2\u4EF6\u961F\u5217\uFF0C\u540E\u7EED\u72B6\u6001\u4EE5\u63D2\u4EF6\u4EFB\u52A1\u7A97\u53E3\u4E3A\u51C6\u3002",
         cls: "wechat-multiplatform-result-detail"
       });
     }
