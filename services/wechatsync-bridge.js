@@ -579,22 +579,21 @@ function createWechatSyncBridgeService(options = {}) {
   function registerSession(pending, hello, origin) {
     const instanceId = hello.extensionInstanceId;
 
+    // Takeover: same extensionInstanceId means the previous SW reloaded
+    // (or was killed). Tear down the previous session so the new hello
+    // can register cleanly. Latest-wins semantic — one extension instance
+    // should only have one live session at any moment. This avoids the
+    // ~10s cold-backoff penalty that would otherwise hit on every reload
+    // because Node's WebSocket readyState lags TCP half-close.
     const existing = sessions.get(instanceId);
-    if (existing && isClientSocketOpen(existing.ws)) {
-      rejectHello(pending, HELLO_ERROR_DUPLICATE_SESSION, { extensionInstanceId: instanceId });
-      return;
-    }
-
-    let openCount = 0;
-    for (const s of sessions.values()) {
-      if (isClientSocketOpen(s.ws)) openCount += 1;
-    }
-    if (openCount >= maxClients) {
-      rejectHello(pending, HELLO_ERROR_TOO_MANY_CLIENTS, { max: maxClients, current: openCount });
-      return;
-    }
-
     if (existing) {
+      audit('hello_takeover', {
+        connectionId: existing.connectionId,
+        newConnectionId: pending.connectionId,
+        extensionInstanceId: instanceId,
+        previousSocketOpen: isClientSocketOpen(existing.ws),
+      });
+      closeWs(existing.ws, 'hello_takeover');
       connectionIdToInstanceId.delete(existing.connectionId);
       for (const [, req] of existing.pendingRequests.entries()) {
         clearTimeout(req.timeout);
@@ -602,6 +601,17 @@ function createWechatSyncBridgeService(options = {}) {
       }
       existing.pendingRequests.clear();
       sessions.delete(instanceId);
+    }
+
+    // After takeover, the old session is gone from the Map so this count
+    // naturally excludes it. Only foreign instanceIds count toward the cap.
+    let openCount = 0;
+    for (const s of sessions.values()) {
+      if (isClientSocketOpen(s.ws)) openCount += 1;
+    }
+    if (openCount >= maxClients) {
+      rejectHello(pending, HELLO_ERROR_TOO_MANY_CLIENTS, { max: maxClients, current: openCount });
+      return;
     }
 
     const session = {

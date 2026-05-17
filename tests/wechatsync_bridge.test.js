@@ -1529,14 +1529,83 @@ describe('§17 Sub-sprint 4.1 — multi-client sessions', () => {
     expect(service.getActiveClientDescriptor().extensionInstanceId).toBe('primary-A');
   });
 
-  it('rejects duplicate_session when same instanceId is already active', async () => {
-    const { port } = await makeService();
-    await connectExtension(port, null, { token: 'secret-token', hello: { extensionInstanceId: 'dup-X' } });
-    const second = await openSocket(port);
-    cleanup.push(second);
-    const ack = await sendHello(second, { token: 'secret-token', overrides: { extensionInstanceId: 'dup-X' } });
-    expect(ack.ok).toBe(false);
-    expect(ack.error).toBe(HELLO_ERROR_DUPLICATE_SESSION);
+  it('takeover: same instanceId reconnect closes old ws and registers new session', async () => {
+    const port = await getFreePort();
+    const auditEvents = [];
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      helloTimeoutMs: 2000,
+      logger: {
+        info: (event, details) => auditEvents.push({ event, details }),
+        debug() {},
+        warn() {},
+      },
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const wsOld = await connectExtension(port, null, {
+      token: 'secret-token',
+      hello: { extensionInstanceId: 'reload-X' },
+    });
+    cleanup.push(wsOld);
+    const oldDescriptor = service.getActiveClientDescriptor();
+    expect(oldDescriptor.extensionInstanceId).toBe('reload-X');
+    const oldConnectionId = oldDescriptor.connectionId;
+
+    // New connection with the SAME instanceId — simulates SW reload
+    // while the old ws still appears OPEN at the Node layer.
+    const wsNew = await openSocket(port);
+    cleanup.push(wsNew);
+    const ack = await sendHello(wsNew, {
+      token: 'secret-token',
+      overrides: { extensionInstanceId: 'reload-X' },
+    });
+    expect(ack.ok).toBe(true);
+
+    // Old ws should be closed by the bridge as part of takeover.
+    await waitForSocketClose(wsOld, 1000);
+
+    // Audit log should contain hello_takeover with both connectionIds.
+    const takeover = auditEvents.find((e) => /hello_takeover/.test(e.event));
+    expect(takeover).toBeDefined();
+    expect(takeover.details).toMatchObject({
+      extensionInstanceId: 'reload-X',
+      connectionId: oldConnectionId,
+    });
+    expect(takeover.details.newConnectionId).not.toBe(oldConnectionId);
+
+    // New session is now the active one for that instanceId.
+    const newDescriptor = service.getActiveClientDescriptor();
+    expect(newDescriptor.extensionInstanceId).toBe('reload-X');
+    expect(newDescriptor.connectionId).toBe(takeover.details.newConnectionId);
+
+    // Bridge no longer emits the duplicate_session ack code.
+    expect(ack.error).toBeFalsy();
+  });
+
+  it('takeover: same-instanceId reconnect succeeds even at maxClients cap', async () => {
+    const { port, service } = await makeService({ maxClients: 1 });
+    const wsOld = await connectExtension(port, null, {
+      token: 'secret-token',
+      hello: { extensionInstanceId: 'solo-A' },
+    });
+    cleanup.push(wsOld);
+
+    // Cap is 1; a foreign instanceId would be rejected, but same
+    // instanceId takeover should still go through (old session is
+    // torn down before the count is taken).
+    const wsNew = await openSocket(port);
+    cleanup.push(wsNew);
+    const ack = await sendHello(wsNew, {
+      token: 'secret-token',
+      overrides: { extensionInstanceId: 'solo-A' },
+    });
+    expect(ack.ok).toBe(true);
+    expect(service.getActiveClientDescriptor().extensionInstanceId).toBe('solo-A');
   });
 
   it('rejects too_many_clients when at maxClients limit', async () => {

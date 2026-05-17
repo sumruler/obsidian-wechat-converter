@@ -10855,9 +10855,21 @@ var require_wechatsync_bridge = __commonJS({
       function registerSession(pending, hello, origin) {
         const instanceId = hello.extensionInstanceId;
         const existing = sessions.get(instanceId);
-        if (existing && isClientSocketOpen(existing.ws)) {
-          rejectHello(pending, HELLO_ERROR_DUPLICATE_SESSION, { extensionInstanceId: instanceId });
-          return;
+        if (existing) {
+          audit("hello_takeover", {
+            connectionId: existing.connectionId,
+            newConnectionId: pending.connectionId,
+            extensionInstanceId: instanceId,
+            previousSocketOpen: isClientSocketOpen(existing.ws)
+          });
+          closeWs(existing.ws, "hello_takeover");
+          connectionIdToInstanceId.delete(existing.connectionId);
+          for (const [, req] of existing.pendingRequests.entries()) {
+            clearTimeout(req.timeout);
+            req.reject(createReadableBridgeError(new Error("Session replaced by reconnect.")));
+          }
+          existing.pendingRequests.clear();
+          sessions.delete(instanceId);
         }
         let openCount = 0;
         for (const s of sessions.values()) {
@@ -10867,15 +10879,6 @@ var require_wechatsync_bridge = __commonJS({
         if (openCount >= maxClients) {
           rejectHello(pending, HELLO_ERROR_TOO_MANY_CLIENTS, { max: maxClients, current: openCount });
           return;
-        }
-        if (existing) {
-          connectionIdToInstanceId.delete(existing.connectionId);
-          for (const [, req] of existing.pendingRequests.entries()) {
-            clearTimeout(req.timeout);
-            req.reject(createReadableBridgeError(new Error("Session replaced by reconnect.")));
-          }
-          existing.pendingRequests.clear();
-          sessions.delete(instanceId);
         }
         const session = {
           connectionId: pending.connectionId,
