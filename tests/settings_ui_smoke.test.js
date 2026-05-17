@@ -407,7 +407,7 @@ describe('AppleStyleSettingTab.display - smoke test', () => {
     expect(dot.textContent).toBe('等待连接');
   });
 
-  it('§16 Phase 1: 有 connected client 时显示「已就绪」且内联浏览器名 + profileLabel', () => {
+  it('§16 Phase 1: 有 profileLabel 时显示 profileLabel（不再叠加 browserName）', () => {
     const tab = renderTab(makePlugin({ multiPlatformSync: {
       enabled: true,
       port: 9527,
@@ -434,8 +434,86 @@ describe('AppleStyleSettingTab.display - smoke test', () => {
     expect(dot.textContent).toBe('已就绪');
     const body = tab.containerEl.querySelector('.wechat-bridge-status-body');
     expect(body).not.toBeNull();
-    expect(body.textContent).toContain('Chrome');
     expect(body.textContent).toContain('主号');
+    // Plan B: profileLabel 存在时不再显示 'Chrome'
+    expect(body.textContent).not.toContain('Chrome');
     expect(body.querySelector('.wechat-bridge-status-id')).toBeNull();
+  });
+
+  it('§16 Phase 1: 无 profileLabel 时降级显示 browserName', () => {
+    const tab = renderTab(makePlugin({ multiPlatformSync: {
+      enabled: true,
+      port: 9527,
+      token: 'abc',
+      connectedClients: [{
+        extensionInstanceId: 'test-instance-id-002',
+        browserName: 'chrome',
+        profileLabel: '',
+        capabilities: {},
+        extensionVersion: '1.1.4',
+        status: 'connected',
+        lastSeenAt: Date.now(),
+        firstConnectedAt: Date.now() - 5000,
+        lastConnectedAt: Date.now(),
+      }],
+      supportedPlatforms: [],
+      selectedPlatforms: [],
+      connection: { status: 'connected', checkedAt: Date.now(), platforms: [], capabilities: {}, message: '' },
+      recentTasks: [],
+    } }));
+    const body = tab.containerEl.querySelector('.wechat-bridge-status-body');
+    expect(body).not.toBeNull();
+    expect(body.textContent).toContain('Chrome');
+  });
+
+  it('§18.7 Plan B: chrome / chromium 走通用 icon（不撒谎为某个特定 fork）', () => {
+    const tab = renderTab(makePlugin({ multiPlatformSync: {
+      enabled: true,
+      port: 9527,
+      token: 'abc',
+      connectedClients: [{
+        extensionInstanceId: 'test-chromium',
+        browserName: 'chrome',
+        profileLabel: '',
+        capabilities: {},
+        extensionVersion: '1.1.4',
+        status: 'connected',
+        lastSeenAt: Date.now(),
+        firstConnectedAt: Date.now() - 5000,
+        lastConnectedAt: Date.now(),
+      }],
+      supportedPlatforms: [],
+      selectedPlatforms: [],
+      connection: { status: 'connected', checkedAt: Date.now(), platforms: [], capabilities: {}, message: '' },
+      recentTasks: [],
+    } }));
+    const body = tab.containerEl.querySelector('.wechat-bridge-status-body');
+    expect(body.querySelector('.wechat-bridge-browser-icon')).toBeNull();         // no SVG
+    expect(body.querySelector('.wechat-bridge-browser-icon-generic')).not.toBeNull(); // generic span
+  });
+
+  it('§18.7 Plan B: opt-in 浏览器（如 edge）保留各自品牌 SVG', () => {
+    const tab = renderTab(makePlugin({ multiPlatformSync: {
+      enabled: true,
+      port: 9527,
+      token: 'abc',
+      connectedClients: [{
+        extensionInstanceId: 'test-edge',
+        browserName: 'edge',
+        profileLabel: '',
+        capabilities: {},
+        extensionVersion: '1.1.4',
+        status: 'connected',
+        lastSeenAt: Date.now(),
+        firstConnectedAt: Date.now() - 5000,
+        lastConnectedAt: Date.now(),
+      }],
+      supportedPlatforms: [],
+      selectedPlatforms: [],
+      connection: { status: 'connected', checkedAt: Date.now(), platforms: [], capabilities: {}, message: '' },
+      recentTasks: [],
+    } }));
+    const body = tab.containerEl.querySelector('.wechat-bridge-status-body');
+    expect(body.querySelector('.wechat-bridge-browser-icon')).not.toBeNull();
   });
 });

@@ -180,9 +180,13 @@ function renderMultiPlatformSettingsTab(tab, containerEl) {
     };
     const BROWSER_EMOJI_FALLBACK = { safari: '🧭', comet: '☄️', orion: '⭐', zen: '🪷' };
 
+    // §18.7：'chrome' / 'chromium' 不可信（Comet / Arc 等 fork 伪装为 Chrome），走通用 icon；
+    // opt-in 识别的浏览器（edge / brave / firefox / vivaldi / opera 等）才用各自品牌 SVG。
+    const LOW_CONFIDENCE_BROWSER_KEYS = new Set(['chrome', 'chromium']);
+
     function renderBrowserIcon(parentEl, name) {
       const key = (name || '').toLowerCase().replace(/\s+/g, '');
-      const browser = BROWSER_SVG[key];
+      const browser = LOW_CONFIDENCE_BROWSER_KEYS.has(key) ? null : BROWSER_SVG[key];
       if (browser) {
         const svg = parentEl.createSvg('svg', {
           attr: { viewBox: '0 0 24 24', width: '14', height: '14', fill: browser.color },
@@ -190,9 +194,23 @@ function renderMultiPlatformSettingsTab(tab, containerEl) {
         });
         svg.createSvg('path', { attr: { d: browser.path } });
       } else {
-        parentEl.createEl('span', { text: BROWSER_EMOJI_FALLBACK[key] || '🌐' });
+        parentEl.createEl('span', {
+          cls: 'wechat-bridge-browser-icon-generic',
+          text: BROWSER_EMOJI_FALLBACK[key] || '🌐',
+        });
       }
-      parentEl.createEl('span', { text: name ? name.charAt(0).toUpperCase() + name.slice(1) : '浏览器' });
+    }
+
+    // profileLabel 优先（用户自定义）；fallback 到格式化后的 browserName。
+    function renderBrowserLabel(parentEl, browserName, profileLabel) {
+      const label = (profileLabel || '').trim();
+      if (label) {
+        parentEl.createEl('span', { cls: 'wechat-bridge-status-profile', text: label });
+      } else {
+        parentEl.createEl('span', {
+          text: browserName ? browserName.charAt(0).toUpperCase() + browserName.slice(1) : '浏览器',
+        });
+      }
     }
 
     function fmtRelativeTime(ts) {
@@ -217,14 +235,13 @@ function renderMultiPlatformSettingsTab(tab, containerEl) {
       dot.classList?.add?.('is-ok');
       dot.textContent = '已就绪';
       renderBrowserIcon(body, liveClient.browserName);
-      if (liveClient.profileLabel) {
-        body.createEl('span', { cls: 'wechat-bridge-status-profile', text: liveClient.profileLabel });
-      }
+      renderBrowserLabel(body, liveClient.browserName, liveClient.profileLabel);
       body.createEl('span', { cls: 'wechat-bridge-status-time', text: fmtRelativeTime(liveClient.lastSeenAt) });
     } else if (lastClient) {
       dot.classList?.add?.('is-unknown');
       dot.textContent = '已断开';
       renderBrowserIcon(body, lastClient.browserName);
+      renderBrowserLabel(body, lastClient.browserName, lastClient.profileLabel);
       body.createEl('span', { text: ' 已断开，请重启浏览器扩展重新连接。' });
       body.createEl('span', { cls: 'wechat-bridge-status-time', text: fmtRelativeTime(lastClient.lastSeenAt) });
     } else if (multiPlatformSettings.connection?.status === 'connected') {
