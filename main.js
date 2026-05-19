@@ -10975,7 +10975,7 @@ var require_wechatsync_bridge = __commonJS({
         registerSession(pending, hello, origin);
       }
       function handleSessionMessage(session, raw) {
-        var _a;
+        var _a, _b;
         let message;
         try {
           message = JSON.parse(raw);
@@ -10989,6 +10989,13 @@ var require_wechatsync_bridge = __commonJS({
         }
         if ((message == null ? void 0 : message.type) === "heartbeat") {
           refreshClientSeen(session.extensionInstanceId);
+          if (isClientSocketOpen(session.ws)) {
+            try {
+              session.ws.send(JSON.stringify({ type: "heartbeat_ack", ts: message.ts }));
+            } catch (err) {
+              (_b = logger.warn) == null ? void 0 : _b.call(logger, "Failed to send heartbeat_ack:", (err == null ? void 0 : err.message) || err);
+            }
+          }
           return;
         }
         const pending = session.pendingRequests.get(message.id);
@@ -11359,11 +11366,15 @@ var require_wechatsync_bridge = __commonJS({
         const params = Array.isArray(platformOrPlatforms) ? { platforms: platformOrPlatforms, forceRefresh } : { platform: platformOrPlatforms, forceRefresh };
         return requestWithMethodFallback("checkAuth", "check_auth", params, { timeoutMs });
       }
-      function syncArticle({ platforms, title, markdown, content, cover, coverThumbnail, assets, timeoutMs = DEFAULT_SYNC_REQUEST_TIMEOUT_MS }) {
+      function syncArticle({ platforms, title, markdown, content, cover, coverThumbnail, assets, quotaPolicy, timeoutMs = DEFAULT_SYNC_REQUEST_TIMEOUT_MS }) {
         const article = { title, markdown, content, cover, assets };
         if (coverThumbnail)
           article.coverThumbnail = coverThumbnail;
-        return request2("syncArticle", { platforms, article }, { timeoutMs });
+        const params = { platforms, article };
+        if (quotaPolicy === "block" || quotaPolicy === "truncate") {
+          params.quotaPolicy = quotaPolicy;
+        }
+        return request2("syncArticle", params, { timeoutMs });
       }
       function enqueueSyncArticle({
         platforms,
@@ -11404,11 +11415,15 @@ var require_wechatsync_bridge = __commonJS({
           maxAgeMs
         }, { timeoutMs });
       }
-      function sendArticle({ platforms, title, markdown, content, cover, coverThumbnail, assets }) {
+      function sendArticle({ platforms, title, markdown, content, cover, coverThumbnail, assets, quotaPolicy }) {
         const article = { title, markdown, content, cover, assets };
         if (coverThumbnail)
           article.coverThumbnail = coverThumbnail;
-        return send("syncArticle", { platforms, article });
+        const params = { platforms, article };
+        if (quotaPolicy === "block" || quotaPolicy === "truncate") {
+          params.quotaPolicy = quotaPolicy;
+        }
+        return send("syncArticle", params);
       }
       async function getStatus() {
         return {
@@ -14311,7 +14326,7 @@ var require_multi_platform_tab = __commonJS({
             const last = diagnostics.lastHelloRejection;
             const reason = last == null ? void 0 : last.reason;
             if (reason === "token_mismatch") {
-              detailedMessage = "\u6D4F\u89C8\u5668\u63D2\u4EF6\u5DF2\u8FDE\u63A5\u4F46\u63E1\u624B\u4EE4\u724C\u4E0D\u5339\u914D\u3002\u8BF7\u786E\u8BA4 Obsidian \u4E0E\u6D4F\u89C8\u5668\u63D2\u4EF6\u4F7F\u7528\u540C\u4E00\u4E2A\u8FDE\u63A5\u4EE4\u724C\u3002";
+              detailedMessage = '\u914D\u5BF9\u4EE4\u724C\u4E0D\u4E00\u81F4\u3002\u5982\u679C\u4F60\u521A\u521A\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u91CD\u7F6E\u8FC7\u4EE4\u724C\uFF0C\u8BF7\u590D\u5236\u65B0\u4EE4\u724C\u5E76\u7C98\u8D34\u5230\u4E0B\u65B9"\u8FDE\u63A5\u4EE4\u724C"\u8F93\u5165\u6846\u3002';
             } else if (reason === "hello_timeout") {
               detailedMessage = "\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u540E\u672A\u5728\u9650\u5B9A\u65F6\u95F4\u5185\u5B8C\u6210\u63E1\u624B\u3002\u53EF\u80FD\u6269\u5C55\u7248\u672C\u8FC7\u65E7\u6216\u672A\u542F\u7528\u63E1\u624B\u3002";
             } else if (reason === "invalid_payload") {
@@ -14787,7 +14802,8 @@ var require_multi_platform = __commonJS({
               content,
               cover,
               coverThumbnail,
-              assets
+              assets,
+              quotaPolicy: QUOTA_POLICY
             });
           }
           console.info("[Wechatsync] enqueueSyncArticle accepted", {
@@ -14884,7 +14900,7 @@ var require_multi_platform = __commonJS({
             stack: error == null ? void 0 : error.stack,
             requestedPlatformIds
           });
-          const displayMessage = (error == null ? void 0 : error.code) === "EXTENSION_NOT_AUTHENTICATED" ? "\u6D4F\u89C8\u5668\u63D2\u4EF6\u5DF2\u8FDE\u63A5\u4F46\u672A\u901A\u8FC7\u63E1\u624B\u8BA4\u8BC1\u3002\u8BF7\u786E\u8BA4\u63D2\u4EF6\u5DF2\u5347\u7EA7\u5230\u652F\u6301\u5B89\u5168\u63E1\u624B\u7684\u7248\u672C\uFF0C\u4E14\u4F7F\u7528\u4E0E Obsidian \u4E00\u81F4\u7684\u8FDE\u63A5\u4EE4\u724C\u3002" : (error == null ? void 0 : error.message) || "\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u5931\u8D25";
+          const displayMessage = (error == null ? void 0 : error.code) === "EXTENSION_NOT_AUTHENTICATED" ? '\u6D4F\u89C8\u5668\u63D2\u4EF6\u5DF2\u8FDE\u63A5\u4F46\u672A\u901A\u8FC7\u63E1\u624B\u8BA4\u8BC1\u3002\u5982\u679C\u4F60\u521A\u521A\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u91CD\u7F6E\u8FC7\u4EE4\u724C\uFF0C\u8BF7\u5230\u672C\u63D2\u4EF6\u7684"\u591A\u5E73\u53F0\u540C\u6B65"\u8BBE\u7F6E\u9875\u7C98\u8D34\u65B0\u4EE4\u724C\uFF1B\u5426\u5219\u8BF7\u786E\u8BA4\u63D2\u4EF6\u5DF2\u5347\u7EA7\u5230\u652F\u6301\u5B89\u5168\u63E1\u624B\u7684\u7248\u672C\u3002' : (error == null ? void 0 : error.message) || "\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u5931\u8D25";
           if (isWechatSyncConnectionFailure2(error)) {
             const currentMultiPlatformSettings = normalizeMultiPlatformSyncSettings2(view.plugin.settings.multiPlatformSync);
             view.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings2({

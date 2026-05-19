@@ -498,7 +498,7 @@ function renderMultiPlatformSettingsTab(tab, containerEl) {
             const last = diagnostics.lastHelloRejection;
             const reason = last?.reason;
             if (reason === 'token_mismatch') {
-              detailedMessage = '浏览器插件已连接但握手令牌不匹配。请确认 Obsidian 与浏览器插件使用同一个连接令牌。';
+              detailedMessage = '配对令牌不一致。如果你刚刚在浏览器插件设置中重置过令牌，请复制新令牌并粘贴到下方"连接令牌"输入框。';
             } else if (reason === 'hello_timeout') {
               detailedMessage = '浏览器插件连接后未在限定时间内完成握手。可能扩展版本过旧或未启用握手。';
             } else if (reason === 'invalid_payload') {

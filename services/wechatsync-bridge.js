@@ -743,6 +743,18 @@ function createWechatSyncBridgeService(options = {}) {
 
     if (message?.type === 'heartbeat') {
       refreshClientSeen(session.extensionInstanceId);
+      // SPEC-1 (Extension >= 2.8.0): echo heartbeat_ack so the extension's
+      // liveness counter resets. Once the plugin ships this reply,
+      // extension can flip MAX_MISSED_HEARTBEAT_ACKS from Infinity to 3
+      // and detect plugin crashes/freezes within ~75s. ts is echoed back
+      // unchanged so the extension can measure round-trip latency.
+      if (isClientSocketOpen(session.ws)) {
+        try {
+          session.ws.send(JSON.stringify({ type: 'heartbeat_ack', ts: message.ts }));
+        } catch (err) {
+          logger.warn?.('Failed to send heartbeat_ack:', err?.message || err);
+        }
+      }
       return;
     }
 
@@ -1150,10 +1162,18 @@ function createWechatSyncBridgeService(options = {}) {
     return requestWithMethodFallback('checkAuth', 'check_auth', params, { timeoutMs });
   }
 
-  function syncArticle({ platforms, title, markdown, content, cover, coverThumbnail, assets, timeoutMs = DEFAULT_SYNC_REQUEST_TIMEOUT_MS }) {
+  function syncArticle({ platforms, title, markdown, content, cover, coverThumbnail, assets, quotaPolicy, timeoutMs = DEFAULT_SYNC_REQUEST_TIMEOUT_MS }) {
     const article = { title, markdown, content, cover, assets };
     if (coverThumbnail) article.coverThumbnail = coverThumbnail;
-    return request('syncArticle', { platforms, article }, { timeoutMs });
+    const params = { platforms, article };
+    // SPEC-3 (Extension >= 2.8.0): quotaPolicy is forwarded so the
+    // extension can choose between 'block' (default; old behavior) and
+    // 'truncate' (auto-shrink to remaining free quota). Older extensions
+    // ignore the field, so this is fully backwards-compatible.
+    if (quotaPolicy === 'block' || quotaPolicy === 'truncate') {
+      params.quotaPolicy = quotaPolicy;
+    }
+    return request('syncArticle', params, { timeoutMs });
   }
 
   function enqueueSyncArticle({
@@ -1205,10 +1225,14 @@ function createWechatSyncBridgeService(options = {}) {
     }, { timeoutMs });
   }
 
-  function sendArticle({ platforms, title, markdown, content, cover, coverThumbnail, assets }) {
+  function sendArticle({ platforms, title, markdown, content, cover, coverThumbnail, assets, quotaPolicy }) {
     const article = { title, markdown, content, cover, assets };
     if (coverThumbnail) article.coverThumbnail = coverThumbnail;
-    return send('syncArticle', { platforms, article });
+    const params = { platforms, article };
+    if (quotaPolicy === 'block' || quotaPolicy === 'truncate') {
+      params.quotaPolicy = quotaPolicy;
+    }
+    return send('syncArticle', params);
   }
 
   async function getStatus() {

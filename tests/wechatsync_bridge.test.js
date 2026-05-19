@@ -484,6 +484,110 @@ describe('Wechatsync bridge service', () => {
     });
   });
 
+  it('forwards quotaPolicy through syncArticle (SPEC-3)', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      requestTimeoutMs: 1000,
+      connectTimeoutMs: 1000,
+      idFactory: () => 'sync-quota-1',
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const extension = await connectExtension(port, (message) => {
+      expect(message).toMatchObject({
+        method: 'syncArticle',
+        params: {
+          platforms: ['zhihu'],
+          quotaPolicy: 'truncate',
+          article: { title: '配额文章' },
+        },
+      });
+      return { result: { syncId: 'quota-sync-1' } };
+    });
+    cleanup.push(extension);
+
+    await service.waitForConnection(1000);
+    await expect(service.syncArticle({
+      platforms: ['zhihu'],
+      title: '配额文章',
+      markdown: '# 正文',
+      content: '<p>正文</p>',
+      quotaPolicy: 'truncate',
+    })).resolves.toMatchObject({ syncId: 'quota-sync-1' });
+  });
+
+  it('omits invalid quotaPolicy values from syncArticle wire payload', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      requestTimeoutMs: 1000,
+      connectTimeoutMs: 1000,
+      idFactory: () => 'sync-quota-bad',
+    });
+    cleanup.push(service);
+    await service.start();
+
+    const extension = await connectExtension(port, (message) => {
+      expect(message.params).not.toHaveProperty('quotaPolicy');
+      return { result: { syncId: 'no-policy' } };
+    });
+    cleanup.push(extension);
+
+    await service.waitForConnection(1000);
+    await expect(service.syncArticle({
+      platforms: ['zhihu'],
+      title: '默认策略',
+      markdown: '# 正文',
+      content: '<p>正文</p>',
+      quotaPolicy: 'invalid-value',
+    })).resolves.toMatchObject({ syncId: 'no-policy' });
+  });
+
+  it('forwards quotaPolicy through sendArticle one-way send (SPEC-3)', async () => {
+    const port = await getFreePort();
+    const service = createWechatSyncBridgeService({
+      WebSocketServer,
+      http,
+      port,
+      token: 'secret-token',
+      requestTimeoutMs: 1000,
+      connectTimeoutMs: 1000,
+      idFactory: () => 'send-quota-1',
+    });
+    cleanup.push(service);
+    await service.start();
+
+    let resolveReceived;
+    const receivedMessage = new Promise((resolve) => { resolveReceived = resolve; });
+    const extension = await connectExtension(port, (message) => {
+      resolveReceived(message);
+      return new Promise(() => {});
+    });
+    cleanup.push(extension);
+
+    await service.waitForConnection(1000);
+    await service.sendArticle({
+      platforms: ['zhihu'],
+      title: '配额一次性',
+      markdown: '# 正文',
+      content: '<p>正文</p>',
+      quotaPolicy: 'truncate',
+    });
+
+    await expect(receivedMessage).resolves.toMatchObject({
+      method: 'syncArticle',
+      params: { quotaPolicy: 'truncate' },
+    });
+  });
+
   it('enqueues article sync and returns the extension sync id', async () => {
     const port = await getFreePort();
     const service = createWechatSyncBridgeService({
@@ -1789,6 +1893,36 @@ describe('§16 Phase 1 — connected clients registry', () => {
     expect(secondStatus.connectedClients[0].firstConnectedAt).toBe(firstConnected);
     expect(secondStatus.connectedClients[0].lastConnectedAt).toBeGreaterThanOrEqual(firstConnected);
     expect(secondStatus.connectedClients[0].status).toBe('connected');
+  });
+
+  it('echoes heartbeat_ack with the same ts so extension liveness counter can reset (SPEC-1)', async () => {
+    const { port, service } = await makeService();
+    const ws = await connectExtension(port, null, { token: 'secret-token' });
+    cleanup.push(ws);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const ackTs = 1716123456789;
+    const ackPromise = new Promise((resolve, reject) => {
+      const onMessage = (data) => {
+        let parsed;
+        try { parsed = JSON.parse(data.toString()); } catch { return; }
+        if (parsed?.type === 'heartbeat_ack') {
+          ws.off('message', onMessage);
+          resolve(parsed);
+        }
+      };
+      ws.on('message', onMessage);
+      setTimeout(() => {
+        ws.off('message', onMessage);
+        reject(new Error('heartbeat_ack timeout'));
+      }, 1500);
+    });
+
+    ws.send(JSON.stringify({ type: 'heartbeat', ts: ackTs }));
+    const ack = await ackPromise;
+    expect(ack).toEqual({ type: 'heartbeat_ack', ts: ackTs });
+    // Service is still alive, no spurious side effects.
+    expect(await service.getStatus()).toMatchObject({ connected: true });
   });
 
   it('refreshes lastSeenAt when a heartbeat arrives', async () => {

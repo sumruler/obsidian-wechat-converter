@@ -416,6 +416,7 @@ async function showMultiPlatformPublishModal(view, options = {}) {
           cover,
           coverThumbnail,
           assets,
+          quotaPolicy: QUOTA_POLICY,
         });
       }
       console.info('[Wechatsync] enqueueSyncArticle accepted', {
@@ -523,7 +524,7 @@ async function showMultiPlatformPublishModal(view, options = {}) {
       // so users know the extension is reachable but failed the handshake,
       // rather than reusing the generic "connection failed" copy.
       const displayMessage = error?.code === 'EXTENSION_NOT_AUTHENTICATED'
-        ? '浏览器插件已连接但未通过握手认证。请确认插件已升级到支持安全握手的版本，且使用与 Obsidian 一致的连接令牌。'
+        ? '浏览器插件已连接但未通过握手认证。如果你刚刚在浏览器插件设置中重置过令牌，请到本插件的"多平台同步"设置页粘贴新令牌；否则请确认插件已升级到支持安全握手的版本。'
         : (error?.message || '浏览器插件连接失败');
       if (isWechatSyncConnectionFailure(error)) {
         const currentMultiPlatformSettings = normalizeMultiPlatformSyncSettings(view.plugin.settings.multiPlatformSync);
