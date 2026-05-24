@@ -11,11 +11,24 @@
 ![Version](https://img.shields.io/badge/version-2.7.6-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0+-purple)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![Chrome Companion](https://img.shields.io/badge/Chrome%20%E5%8D%8F%E5%90%8C%E6%89%A9%E5%B1%95-Obsidian%20%E5%8F%91%E5%B8%83%E5%8A%A9%E6%89%8B%E2%80%A2%E5%8D%B3%E5%B0%86%E4%B8%8A%E6%9E%B6-7c3aed)
 
 
 > 本项目基于开源项目 [ai-writing-plugins](https://github.com/Ceeon/ai-writing-plugins) 进行深度重构与迭代开发。我们致力于打造 Obsidian 生态中体验最好的公众号排版工具。
 
 如果这个插件帮你节省了公众号排版、复制或同步草稿箱的时间，欢迎[支持项目继续维护](./docs/support.md)。
+
+---
+
+> 🌐 **多平台发布预告 · 配套浏览器扩展「Obsidian 发布助手」**
+>
+> 除了微信公众号外，作者另发布了配套浏览器扩展，支持把同一篇 Obsidian 文章**一键保存到知乎、掘金、CSDN、小红书、头条号、博客园、SegmentFault、雪球、什么值得买**等 20+ 内容平台的草稿箱。
+>
+> - **隐私优先**：使用你**已有的浏览器登录态**调用各平台官方 Web 编辑器接口保存草稿，**绝不上传文章到第三方服务器**，**默认只保存草稿，绝不直接发布**。
+> - **职责分工**：Obsidian 是写作入口，本插件继续负责微信公众号；浏览器扩展只是非微信平台的发布执行端，由本插件直接派发任务给它。
+> - **当前状态**：正在准备 Chrome Web Store 审核（先以 Unlisted 模式给小范围用户试用）。审核通过后本徽章会替换为商店直达链接。
+> - **隐私政策**：[xiaoweibox.top/obsidian-publisher/privacy](https://xiaoweibox.top/obsidian-publisher/privacy)
+> - **用户协议**：[xiaoweibox.top/obsidian-publisher/terms](https://xiaoweibox.top/obsidian-publisher/terms)
 
 
 ## 💡 核心升级点 (Key Highlights)

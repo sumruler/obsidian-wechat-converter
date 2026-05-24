@@ -7,12 +7,25 @@ Convert Obsidian Markdown into polished WeChat articles with live preview, copy-
 ![Version](https://img.shields.io/badge/version-2.7.6-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0+-purple)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![Chrome Companion](https://img.shields.io/badge/Chrome%20Companion-Obsidian%20Publisher%20%E2%80%A2%20Coming%20Soon-7c3aed)
 
 This plugin is built for writers who publish from Obsidian to WeChat Official Accounts. It focuses on the last mile of publishing: preserving layout, code blocks, math, images, and article metadata while keeping the workflow fast inside Obsidian.
 
 > This project is deeply refactored from [ai-writing-plugins](https://github.com/Ceeon/ai-writing-plugins). Proper attribution is retained in this repository.
 
 If this plugin saves you time when formatting, copying, or syncing WeChat articles, you can [support ongoing maintenance](./docs/support.md).
+
+---
+
+> 🌐 **Multi-platform publishing · Companion browser extension "Obsidian Publisher"**
+>
+> Beyond WeChat, the author maintains a companion Chrome extension that saves the same Obsidian article as a **draft** on **20+ Chinese content platforms** (Zhihu, Juejin, CSDN, Xiaohongshu, Toutiao, etc.) using your **existing browser login sessions**.
+>
+> - **Privacy first**: The extension calls each platform's official Web editor API directly. Articles never leave your machine to any third-party server. Drafts only — never auto-publishes.
+> - **Separation of concerns**: Obsidian is the authoring entry; this plugin still owns WeChat publishing; the browser extension is purely the execution layer for non-WeChat platforms, dispatched by this plugin.
+> - **Status**: Currently preparing Chrome Web Store submission (Unlisted mode for limited rollout). The badge above will be replaced with the store link once approved.
+> - **Privacy Policy**: [xiaoweibox.top/obsidian-publisher/privacy](https://xiaoweibox.top/obsidian-publisher/privacy)
+> - **Terms of Service**: [xiaoweibox.top/obsidian-publisher/terms](https://xiaoweibox.top/obsidian-publisher/terms)
 
 ## Highlights
 
