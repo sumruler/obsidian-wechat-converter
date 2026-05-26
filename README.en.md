@@ -4,7 +4,7 @@
 
 Convert Obsidian Markdown into polished WeChat articles, then keep publishing to more platforms from the same workflow. Wechat Converter now supports live preview, copy-to-editor, WeChat draft sync, and beta multi-platform distribution through the Obsidian Publisher browser extension.
 
-![Version](https://img.shields.io/badge/version-2.7.6-blue)
+![Version](https://img.shields.io/badge/version-2.8.0-blue)
 ![Obsidian](https://img.shields.io/badge/Obsidian-1.0.0+-purple)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Chrome Companion](https://img.shields.io/badge/Chrome%20Companion-Obsidian%20Publisher%20%E2%80%A2%20Coming%20Soon-7c3aed)
