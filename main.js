@@ -1698,6 +1698,42 @@ var require_obsidian_triplet_serializer = __commonJS({
         callout.replaceWith(...replacementNodes);
       }
     }
+    function getObsidianCalloutParts(callout) {
+      const typeRaw = callout.getAttribute("data-callout") || callout.getAttribute("data-callout-type") || "";
+      const type = String(typeRaw || "").trim().toLowerCase();
+      const titleEl = callout.querySelector(":scope > .callout-title .callout-title-inner") || callout.querySelector(":scope > .callout-title-inner") || callout.querySelector(":scope > .callout-title");
+      const titleText = String((titleEl == null ? void 0 : titleEl.textContent) || "").trim();
+      const contentEl = callout.querySelector(":scope > .callout-content") || callout.querySelector(":scope > .callout-body");
+      return { type, titleText, contentEl };
+    }
+    function convertObsidianImageSwipeCallouts(container) {
+      if (!container)
+        return;
+      const callouts = Array.from(
+        container.querySelectorAll("div.callout,aside.callout,blockquote.callout,section.callout")
+      );
+      for (const callout of callouts) {
+        if (!callout || !callout.parentNode)
+          continue;
+        const { type, titleText, contentEl } = getObsidianCalloutParts(callout);
+        if (type !== "image-swipe" && type !== "image-sensitive")
+          continue;
+        const sourceEl = contentEl || callout;
+        const imgs = Array.from(sourceEl.querySelectorAll("img"));
+        if (!imgs.length)
+          continue;
+        const block = document.createElement("section");
+        block.setAttribute("data-owc-image-swipe", "1");
+        block.setAttribute("data-owc-image-swipe-type", type);
+        if (type === "image-sensitive") {
+          block.setAttribute("data-owc-image-swipe-warning", encodeURIComponent(titleText || IMAGE_SWIPE_DEFAULT_WARNING));
+        } else {
+          block.setAttribute("data-owc-image-swipe-hint", encodeURIComponent(titleText || IMAGE_SWIPE_DEFAULT_HINT));
+        }
+        imgs.forEach((img) => block.appendChild(img));
+        callout.replaceWith(block);
+      }
+    }
     function sanitizeClassList(el, tagName, finalStage = false) {
       const className = el.getAttribute("class");
       if (!className)
@@ -1799,7 +1835,7 @@ var require_obsidian_triplet_serializer = __commonJS({
         if (tagName === "a")
           return /* @__PURE__ */ new Set(["href", "style"]);
         if (tagName === "img")
-          return /* @__PURE__ */ new Set(["src", "alt", "style", "width", "height", "class"]);
+          return /* @__PURE__ */ new Set(["src", "alt", "style", "width", "height", "class", "referrerpolicy"]);
         if (tagName === "section" && !finalStage) {
           return /* @__PURE__ */ new Set(["style", "class", "data-owc-image-swipe", "data-owc-image-swipe-type", "data-owc-image-swipe-warning", "data-owc-image-swipe-hint"]);
         }
@@ -2183,6 +2219,13 @@ var require_obsidian_triplet_serializer = __commonJS({
       }
       const rawAlt = img.getAttribute("alt") || "";
       const alt = buildLegacyParityImageAlt(img, rawAlt);
+      const widthHint = extractWidthHintFromText(alt);
+      if (widthHint && !img.getAttribute("width")) {
+        img.setAttribute("width", widthHint);
+      }
+      if (/^(?:https?:)?\/\//i.test(src)) {
+        img.setAttribute("referrerpolicy", "no-referrer");
+      }
       img.setAttribute("src", src);
       img.setAttribute("alt", alt);
       return {
@@ -2834,6 +2877,7 @@ var require_obsidian_triplet_serializer = __commonJS({
       container.innerHTML = root ? root.innerHTML : "";
       materializeImageEmbedPlaceholders(container, converter);
       promoteImageEmbedAltHints(container);
+      convertObsidianImageSwipeCallouts(container);
       convertObsidianCalloutsToLegacy(container, converter);
       pruneObsidianOnlyAttributes(container, { finalStage: false });
       normalizeLegacyTagAliases(container);
@@ -4721,8 +4765,39 @@ var require_obsidian_triplet_renderer = __commonJS({
       const titledMatch = value.match(/^(.+?)\s+(['"]).*\2\s*$/);
       return (titledMatch ? titledMatch[1] : value).trim();
     }
+    function parseImageSwipeBareRemoteUrlLine(value) {
+      const match = String(value || "").trim().match(/^<?((?:https?:)?\/\/[^\s<>]+)>?$/i);
+      if (!match)
+        return null;
+      return {
+        src: encodeURI(match[1]),
+        alt: ""
+      };
+    }
+    function isImageSwipeRemoteSrc(src) {
+      return /^(?:https?:)?\/\//i.test(String(src || "").trim());
+    }
+    function extractImageSwipeWidthHint(alt) {
+      const match = String(alt || "").match(/\|\s*(\d{2,4})(?:x\d+)?\s*$/i);
+      return match ? match[1] : "";
+    }
+    function renderImageSwipeImgTag(image) {
+      const attrs = [
+        `src="${escapeImageSwipeHtmlAttr(image.src)}"`,
+        `alt="${escapeImageSwipeHtmlAttr(image.alt)}"`
+      ];
+      const width = extractImageSwipeWidthHint(image.alt);
+      if (width)
+        attrs.push(`width="${width}"`);
+      if (isImageSwipeRemoteSrc(image.src))
+        attrs.push('referrerpolicy="no-referrer"');
+      return `<img ${attrs.join(" ")}>`;
+    }
     function parseImageSwipeMarkdownLine(line) {
       const value = String(line || "").trim();
+      const bareRemoteImage = parseImageSwipeBareRemoteUrlLine(value);
+      if (bareRemoteImage)
+        return bareRemoteImage;
       const wikiMatch = value.match(/^!\[\[([^\]|]+)(?:\|([^\]]+))?]]$/);
       if (wikiMatch) {
         return {
@@ -4832,6 +4907,18 @@ var require_obsidian_triplet_renderer = __commonJS({
       }
       return images;
     }
+    function hasRemoteImageSwipeImage(blockLines) {
+      return collectImageSwipeImages(blockLines).some((image) => isImageSwipeRemoteSrc(image.src));
+    }
+    function normalizeBareRemoteImageSwipeQuoteLine(line) {
+      const match = String(line || "").match(/^(\s{0,3}>\s?)([\s\S]*)$/);
+      if (!match)
+        return line;
+      const image = parseImageSwipeBareRemoteUrlLine(match[2]);
+      if (!image)
+        return line;
+      return `${match[1]}![](${image.src})`;
+    }
     function renderImageSwipeHtmlBlock(type, blockLines, optionText) {
       const images = collectImageSwipeImages(blockLines);
       if (!images.length)
@@ -4847,7 +4934,7 @@ var require_obsidian_triplet_renderer = __commonJS({
       }
       return [
         `<section ${attrs.join(" ")}>`,
-        ...images.map((image) => `<img src="${escapeImageSwipeHtmlAttr(image.src)}" alt="${escapeImageSwipeHtmlAttr(image.alt)}">`),
+        ...images.map((image) => renderImageSwipeImgTag(image)),
         "</section>"
       ];
     }
@@ -4907,6 +4994,10 @@ var require_obsidian_triplet_renderer = __commonJS({
           originalLines.push(lines[i]);
           blockLines.push(stripSingleQuotePrefix(lines[i]));
           i += 1;
+        }
+        if (hasRemoteImageSwipeImage(blockLines)) {
+          output.push(...originalLines.map((line, index) => index === 0 ? line : normalizeBareRemoteImageSwipeQuoteLine(line)));
+          continue;
         }
         const rendered = renderImageSwipeHtmlBlock(callout.type, blockLines, callout.optionText);
         if (rendered) {
@@ -10210,6 +10301,1619 @@ var require_wechat_sync = __commonJS({
   }
 });
 
+// services/wechatsync-bridge.js
+var require_wechatsync_bridge = __commonJS({
+  "services/wechatsync-bridge.js"(exports2, module2) {
+    var DEFAULT_WECHATSYNC_PORT2 = 9527;
+    var DEFAULT_REQUEST_TIMEOUT_MS = 36e4;
+    var DEFAULT_CONNECT_TIMEOUT_MS = 6e4;
+    var DEFAULT_PLATFORM_REQUEST_TIMEOUT_MS = 6e4;
+    var DEFAULT_SYNC_REQUEST_TIMEOUT_MS = 18e4;
+    var DEFAULT_HELLO_TIMEOUT_MS = 3e4;
+    var LOCAL_BIND_HOST = "127.0.0.1";
+    var REMOTE_BIND_HOST = "0.0.0.0";
+    var WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    var HELLO_ERROR_TOKEN_MISMATCH = "token_mismatch";
+    var HELLO_ERROR_INVALID_PAYLOAD = "invalid_payload";
+    var HELLO_ERROR_TIMEOUT = "hello_timeout";
+    var HELLO_ERROR_VERSION_UNSUPPORTED = "version_unsupported";
+    var HELLO_ERROR_DUPLICATE_SESSION = "duplicate_session";
+    var HELLO_ERROR_TOO_MANY_CLIENTS = "too_many_clients";
+    var DEFAULT_MAX_CLIENTS = 4;
+    var MAX_CONNECTED_CLIENT_REGISTRY = 20;
+    function isUnsupportedBridgeMethodError(error = {}) {
+      const message = String((error == null ? void 0 : error.message) || error || "");
+      return /unknown method|unknown tool|method not found|not supported|unsupported/i.test(message);
+    }
+    function isRecoverableBridgeConnectionError(error = {}) {
+      const code = (error == null ? void 0 : error.code) || "";
+      return ["EXTENSION_NOT_CONNECTED", "EXTENSION_NOT_AUTHENTICATED", "BRIDGE_UNAVAILABLE", "BRIDGE_REQUEST_TIMEOUT"].includes(code);
+    }
+    function sleep2(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    async function retryRecoverableBridgeOperation2(operation, options = {}) {
+      var _a;
+      const {
+        retries = 2,
+        delayMs = 1e3,
+        delay = sleep2,
+        shouldRetry = isRecoverableBridgeConnectionError,
+        logger = console,
+        label = "bridge request"
+      } = options;
+      let attempt = 0;
+      while (true) {
+        try {
+          return await operation({ attempt });
+        } catch (error) {
+          const readableError = createReadableBridgeError(error);
+          if (attempt >= retries || !shouldRetry(readableError, attempt)) {
+            throw readableError;
+          }
+          attempt += 1;
+          (_a = logger.debug) == null ? void 0 : _a.call(logger, "[WechatsyncBridge] retrying recoverable operation", {
+            label,
+            attempt,
+            retries,
+            delayMs,
+            code: readableError == null ? void 0 : readableError.code,
+            message: (readableError == null ? void 0 : readableError.message) || String(readableError)
+          });
+          await delay(delayMs, attempt, readableError);
+        }
+      }
+    }
+    function createEmitter() {
+      const listeners = /* @__PURE__ */ new Map();
+      return {
+        on(event, handler) {
+          const handlers = listeners.get(event) || [];
+          handlers.push(handler);
+          listeners.set(event, handlers);
+          return this;
+        },
+        once(event, handler) {
+          const wrapped = (...args) => {
+            this.off(event, wrapped);
+            handler(...args);
+          };
+          return this.on(event, wrapped);
+        },
+        off(event, handler) {
+          const handlers = listeners.get(event) || [];
+          listeners.set(event, handlers.filter((item) => item !== handler));
+          return this;
+        },
+        emit(event, ...args) {
+          const handlers = listeners.get(event) || [];
+          for (const handler of handlers.slice()) {
+            handler(...args);
+          }
+        }
+      };
+    }
+    function encodeWebSocketTextFrame(text) {
+      const payload = Buffer.from(String(text));
+      const length = payload.length;
+      let header;
+      if (length < 126) {
+        header = Buffer.from([129, length]);
+      } else if (length < 65536) {
+        header = Buffer.alloc(4);
+        header[0] = 129;
+        header[1] = 126;
+        header.writeUInt16BE(length, 2);
+      } else {
+        header = Buffer.alloc(10);
+        header[0] = 129;
+        header[1] = 127;
+        header.writeBigUInt64BE(BigInt(length), 2);
+      }
+      return Buffer.concat([header, payload]);
+    }
+    function parseWebSocketFrames(buffer) {
+      const messages = [];
+      let offset = 0;
+      while (offset + 2 <= buffer.length) {
+        const firstByte = buffer[offset];
+        const secondByte = buffer[offset + 1];
+        const opcode = firstByte & 15;
+        const masked = (secondByte & 128) === 128;
+        let payloadLength = secondByte & 127;
+        let cursor = offset + 2;
+        if (payloadLength === 126) {
+          if (cursor + 2 > buffer.length)
+            break;
+          payloadLength = buffer.readUInt16BE(cursor);
+          cursor += 2;
+        } else if (payloadLength === 127) {
+          if (cursor + 8 > buffer.length)
+            break;
+          const longLength = buffer.readBigUInt64BE(cursor);
+          if (longLength > BigInt(Number.MAX_SAFE_INTEGER)) {
+            throw new Error("WebSocket frame is too large.");
+          }
+          payloadLength = Number(longLength);
+          cursor += 8;
+        }
+        let mask = null;
+        if (masked) {
+          if (cursor + 4 > buffer.length)
+            break;
+          mask = buffer.subarray(cursor, cursor + 4);
+          cursor += 4;
+        }
+        if (cursor + payloadLength > buffer.length)
+          break;
+        const payload = Buffer.from(buffer.subarray(cursor, cursor + payloadLength));
+        if (mask) {
+          for (let i = 0; i < payload.length; i++) {
+            payload[i] = payload[i] ^ mask[i % 4];
+          }
+        }
+        if (opcode === 1) {
+          messages.push(payload.toString("utf8"));
+        }
+        if (opcode === 8) {
+          messages.push({
+            __ws_control: "close",
+            code: payload.length >= 2 ? payload.readUInt16BE(0) : void 0
+          });
+        }
+        if (opcode === 9) {
+          messages.push({ __ws_control: "ping", payload });
+        }
+        offset = cursor + payloadLength;
+      }
+      return {
+        messages,
+        remaining: buffer.subarray(offset)
+      };
+    }
+    function createSocketWrapper(socket) {
+      const emitter = createEmitter();
+      const wrapper = {
+        readyState: 1,
+        on: emitter.on.bind(emitter),
+        once: emitter.once.bind(emitter),
+        off: emitter.off.bind(emitter),
+        send(data) {
+          if (wrapper.readyState !== 1)
+            return;
+          socket.write(encodeWebSocketTextFrame(data));
+        },
+        close() {
+          wrapper.readyState = 3;
+          socket.end();
+        }
+      };
+      let buffered = Buffer.alloc(0);
+      socket.on("data", (chunk) => {
+        try {
+          buffered = Buffer.concat([buffered, chunk]);
+          const result = parseWebSocketFrames(buffered);
+          buffered = result.remaining;
+          for (const message of result.messages) {
+            if (typeof message === "object" && message !== null && message.__ws_control) {
+              if (message.__ws_control === "ping") {
+                const pongFrame = Buffer.alloc(2 + message.payload.length);
+                pongFrame[0] = 138;
+                pongFrame[1] = message.payload.length;
+                message.payload.copy(pongFrame, 2);
+                socket.write(pongFrame);
+              }
+              if (message.__ws_control === "close") {
+                wrapper.readyState = 3;
+                socket.end();
+              }
+              continue;
+            }
+            emitter.emit("message", Buffer.from(message));
+          }
+        } catch (error) {
+          emitter.emit("error", error);
+          socket.destroy();
+        }
+      });
+      socket.on("close", () => {
+        wrapper.readyState = 3;
+        emitter.emit("close");
+      });
+      socket.on("error", (error) => {
+        wrapper.readyState = 3;
+        emitter.emit("error", error);
+      });
+      return wrapper;
+    }
+    function isOriginAllowedForWebSocket(origin = "", { allowlist = null } = {}) {
+      if (!allowlist)
+        return true;
+      const trimmed = String(origin || "").trim();
+      if (!trimmed)
+        return true;
+      for (const pattern of allowlist) {
+        if (typeof pattern === "string") {
+          if (pattern === "*" || pattern === trimmed)
+            return true;
+          if (pattern.endsWith("*") && trimmed.startsWith(pattern.slice(0, -1)))
+            return true;
+        } else if (pattern instanceof RegExp) {
+          if (pattern.test(trimmed))
+            return true;
+        }
+      }
+      return false;
+    }
+    function createMinimalWebSocketServer({ http, port, host = LOCAL_BIND_HOST, originAllowlist = null, logger = console }) {
+      const crypto = require("crypto");
+      const emitter = createEmitter();
+      const server = http.createServer();
+      const sockets = /* @__PURE__ */ new Set();
+      server.on("upgrade", (req, socket) => {
+        var _a, _b, _c;
+        const origin = req.headers.origin || "";
+        (_a = logger.debug) == null ? void 0 : _a.call(logger, "[WechatsyncBridge] WebSocket upgrade received", {
+          url: req.url,
+          origin,
+          userAgent: req.headers["user-agent"] || ""
+        });
+        if (originAllowlist && !isOriginAllowedForWebSocket(origin, { allowlist: originAllowlist })) {
+          (_b = logger.warn) == null ? void 0 : _b.call(logger, "[WechatsyncBridge] WebSocket upgrade rejected: origin not allowed", { origin });
+          try {
+            socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+          } catch (e) {
+          }
+          socket.destroy();
+          return;
+        }
+        const key = req.headers["sec-websocket-key"];
+        if (!key) {
+          (_c = logger.warn) == null ? void 0 : _c.call(logger, "[WechatsyncBridge] WebSocket upgrade rejected: missing sec-websocket-key");
+          socket.destroy();
+          return;
+        }
+        const accept = crypto.createHash("sha1").update(`${key}${WS_GUID}`).digest("base64");
+        socket.write([
+          "HTTP/1.1 101 Switching Protocols",
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          `Sec-WebSocket-Accept: ${accept}`,
+          "",
+          ""
+        ].join("\r\n"));
+        const wrapped = createSocketWrapper(socket);
+        sockets.add(wrapped);
+        wrapped.on("close", () => sockets.delete(wrapped));
+        emitter.emit("connection", wrapped, { origin });
+      });
+      server.on("error", (error) => emitter.emit("error", error));
+      server.listen(port, host, () => emitter.emit("listening"));
+      return {
+        on: emitter.on.bind(emitter),
+        once: emitter.once.bind(emitter),
+        off: emitter.off.bind(emitter),
+        close(callback) {
+          var _a;
+          for (const socket of sockets) {
+            try {
+              socket.close();
+            } catch (error) {
+              (_a = logger.warn) == null ? void 0 : _a.call(logger, "Failed to close Wechatsync socket:", error);
+            }
+          }
+          server.close(callback);
+        }
+      };
+    }
+    function getWebSocketOpenState(WebSocketServer) {
+      var _a;
+      return (WebSocketServer == null ? void 0 : WebSocketServer.OPEN) || ((_a = WebSocketServer == null ? void 0 : WebSocketServer.WebSocket) == null ? void 0 : _a.OPEN) || 1;
+    }
+    function createReadableBridgeError(error) {
+      const message = String((error == null ? void 0 : error.message) || error || "");
+      if (/Invalid or missing token|MCP token not configured|401|403/i.test(message)) {
+        const friendly = new Error("\u6D4F\u89C8\u5668\u63D2\u4EF6\u5DF2\u54CD\u5E94\uFF0C\u4F46\u8FDE\u63A5\u4EE4\u724C\u6821\u9A8C\u5931\u8D25\u3002\u8BF7\u786E\u8BA4 Obsidian \u4E0E\u6D4F\u89C8\u5668\u63D2\u4EF6\u4F7F\u7528\u540C\u4E00\u4E2A\u8FDE\u63A5\u4EE4\u724C\u3002");
+        friendly.code = "AUTH_FAILED";
+        friendly.cause = error;
+        return friendly;
+      }
+      if (/Extension not authenticated/i.test(message)) {
+        const friendly = new Error("\u6D4F\u89C8\u5668\u63D2\u4EF6\u5DF2\u8FDE\u63A5\u4F46\u672A\u901A\u8FC7\u8BA4\u8BC1\u3002\u8BF7\u786E\u8BA4\u63D2\u4EF6\u5DF2\u5347\u7EA7\u5230\u652F\u6301\u5B89\u5168\u63E1\u624B\u7684\u7248\u672C\uFF0C\u4E14\u4F7F\u7528\u4E0E Obsidian \u4E00\u81F4\u7684\u8FDE\u63A5\u4EE4\u724C\u3002");
+        friendly.code = "EXTENSION_NOT_AUTHENTICATED";
+        friendly.cause = error;
+        return friendly;
+      }
+      if (/Extension not connected|not connected|timeout:no_extension/i.test(message)) {
+        const friendly = new Error("\u5C1A\u672A\u8FDE\u63A5\u5230\u6D4F\u89C8\u5668\u63D2\u4EF6\u3002\u8BF7\u786E\u8BA4\u5DF2\u5728\u6B63\u5728\u8FD0\u884C\u7684 Chromium \u6D4F\u89C8\u5668\u4E2D\u5B89\u88C5\u63D2\u4EF6\uFF0C\u5E76\u68C0\u67E5\u5730\u5740\u3001\u7AEF\u53E3\u548C\u8FDE\u63A5\u4EE4\u724C\u3002");
+        friendly.code = "EXTENSION_NOT_CONNECTED";
+        friendly.cause = error;
+        return friendly;
+      }
+      if (/Request timeout: listPlatforms/i.test(message)) {
+        const friendly = new Error("\u6D4F\u89C8\u5668\u63D2\u4EF6\u5DF2\u8FDE\u63A5\uFF0C\u4F46\u8BFB\u53D6\u5E73\u53F0\u5217\u8868\u8D85\u65F6\u3002\u5E73\u53F0\u8F83\u591A\u6216\u90E8\u5206\u5E73\u53F0\u68C0\u67E5\u8F83\u6162\u65F6\u53EF\u80FD\u53D1\u751F\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002");
+        friendly.code = "PLATFORM_LIST_TIMEOUT";
+        friendly.cause = error;
+        return friendly;
+      }
+      if (/Request timeout: syncArticle/i.test(message)) {
+        const friendly = new Error("\u6D4F\u89C8\u5668\u63D2\u4EF6\u957F\u65F6\u95F4\u6CA1\u6709\u8FD4\u56DE\u540C\u6B65\u7ED3\u679C\u3002\u63D2\u4EF6\u53EF\u80FD\u4ECD\u5728\u540E\u53F0\u5904\u7406\uFF0C\u8BF7\u5148\u5230\u63D2\u4EF6\u5386\u53F2\u6216\u76EE\u6807\u5E73\u53F0\u8349\u7A3F\u7BB1\u786E\u8BA4\u7ED3\u679C\uFF1B\u5982\u679C\u67D0\u4E2A\u5E73\u53F0\u5361\u4F4F\uFF0C\u5EFA\u8BAE\u51CF\u5C11\u5E73\u53F0\u540E\u91CD\u8BD5\u3002");
+        friendly.code = "SYNC_TIMEOUT";
+        friendly.cause = error;
+        return friendly;
+      }
+      if (/Request timeout: (health|listSupportedPlatforms|enqueueSyncArticle|getSyncTask|getSyncTaskLink|openSyncTask|getAuthSnapshot)/i.test(message)) {
+        const friendly = new Error("\u6D4F\u89C8\u5668\u63D2\u4EF6\u54CD\u5E94\u8D85\u65F6\uFF0C\u8BF7\u786E\u8BA4\u6D4F\u89C8\u5668\u6B63\u5728\u8FD0\u884C\uFF0C\u5730\u5740\u3001\u7AEF\u53E3\u548C\u8FDE\u63A5\u4EE4\u724C\u6B63\u786E\u540E\u91CD\u8BD5\u3002");
+        friendly.code = "BRIDGE_REQUEST_TIMEOUT";
+        friendly.cause = error;
+        return friendly;
+      }
+      if (/EADDRINUSE|Primary|ECONNREFUSED|not reachable/i.test(message)) {
+        const friendly = new Error("\u65E0\u6CD5\u8FDE\u63A5\u672C\u5730\u670D\u52A1\u3002\u8BF7\u786E\u8BA4\u6CA1\u6709\u5176\u4ED6\u540C\u6B65\u8FDB\u7A0B\u5360\u7528\u7AEF\u53E3\uFF0C\u6216\u7A0D\u540E\u91CD\u8BD5\u3002");
+        friendly.code = "BRIDGE_UNAVAILABLE";
+        friendly.cause = error;
+        return friendly;
+      }
+      return error instanceof Error ? error : new Error(message || "\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u8BF7\u6C42\u5931\u8D25\u3002");
+    }
+    function readRequestBody(req) {
+      return new Promise((resolve, reject) => {
+        let body = "";
+        req.on("data", (chunk) => {
+          body += chunk;
+        });
+        req.on("end", () => resolve(body));
+        req.on("error", reject);
+      });
+    }
+    function defaultConnectionIdFactory() {
+      try {
+        const nodeCrypto = require("crypto");
+        if (typeof nodeCrypto.randomUUID === "function") {
+          return nodeCrypto.randomUUID();
+        }
+      } catch (e) {
+      }
+      return `conn-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+    }
+    function createWechatSyncBridgeService2(options = {}) {
+      const {
+        WebSocketServer,
+        http,
+        port = DEFAULT_WECHATSYNC_PORT2,
+        token = "",
+        requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+        connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
+        helloTimeoutMs = DEFAULT_HELLO_TIMEOUT_MS,
+        allowRemote = false,
+        originAllowlist = null,
+        serverVersion = "",
+        logger = console,
+        idFactory = () => `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
+        connectionIdFactory = defaultConnectionIdFactory,
+        onClientRegistryChange = null,
+        initialConnectedClients = [],
+        maxClients = DEFAULT_MAX_CLIENTS
+      } = options;
+      if (!http) {
+        throw new Error("http module is required to create Wechatsync bridge service.");
+      }
+      const bindHost = allowRemote ? REMOTE_BIND_HOST : LOCAL_BIND_HOST;
+      let connectedClients = Array.isArray(initialConnectedClients) ? initialConnectedClients.map((c) => ({ ...c })) : [];
+      let _clientRegistryDebounceTimer = null;
+      trimClientRegistry();
+      function scheduleRegistryChange() {
+        if (!onClientRegistryChange)
+          return;
+        clearTimeout(_clientRegistryDebounceTimer);
+        _clientRegistryDebounceTimer = setTimeout(() => {
+          onClientRegistryChange(connectedClients.map((c) => ({ ...c })));
+        }, 1e3);
+      }
+      function trimClientRegistry() {
+        if (connectedClients.length <= MAX_CONNECTED_CLIENT_REGISTRY)
+          return 0;
+        const connected = connectedClients.filter((c) => c && c.status === "connected");
+        const disconnected = connectedClients.filter((c) => c && c.status !== "connected").sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0));
+        const budgetForDisconnected = Math.max(0, MAX_CONNECTED_CLIENT_REGISTRY - connected.length);
+        const keptDisconnected = disconnected.slice(0, budgetForDisconnected);
+        const next = [...connected, ...keptDisconnected];
+        const dropped = connectedClients.length - next.length;
+        connectedClients = next;
+        return dropped;
+      }
+      function upsertConnectedClient(hello, status) {
+        var _a;
+        const now = Date.now();
+        const idx = connectedClients.findIndex(
+          (c) => c.extensionInstanceId === hello.extensionInstanceId
+        );
+        if (idx >= 0) {
+          const existing = connectedClients[idx];
+          connectedClients[idx] = {
+            ...existing,
+            browserName: hello.browserName || existing.browserName,
+            profileLabel: hello.profileLabel !== void 0 ? hello.profileLabel : existing.profileLabel,
+            capabilities: hello.capabilities || existing.capabilities,
+            extensionVersion: hello.version || existing.extensionVersion,
+            status,
+            lastSeenAt: now,
+            lastConnectedAt: status === "connected" ? now : existing.lastConnectedAt
+          };
+        } else {
+          connectedClients.push({
+            extensionInstanceId: hello.extensionInstanceId,
+            browserName: hello.browserName || "",
+            profileLabel: hello.profileLabel || "",
+            capabilities: hello.capabilities || {},
+            extensionVersion: hello.version || "",
+            status,
+            lastSeenAt: now,
+            firstConnectedAt: now,
+            lastConnectedAt: now
+          });
+        }
+        const dropped = trimClientRegistry();
+        if (dropped > 0) {
+          (_a = logger.debug) == null ? void 0 : _a.call(logger, "Wechatsync bridge: trimmed", dropped, "stale client registry entries");
+        }
+        scheduleRegistryChange();
+      }
+      function markClientDisconnected(extensionInstanceId) {
+        if (!extensionInstanceId)
+          return;
+        const idx = connectedClients.findIndex(
+          (c) => c.extensionInstanceId === extensionInstanceId
+        );
+        if (idx < 0)
+          return;
+        connectedClients[idx] = { ...connectedClients[idx], status: "disconnected" };
+        scheduleRegistryChange();
+      }
+      function refreshClientSeen(extensionInstanceId) {
+        if (!extensionInstanceId)
+          return;
+        const idx = connectedClients.findIndex(
+          (c) => c.extensionInstanceId === extensionInstanceId
+        );
+        if (idx < 0)
+          return;
+        connectedClients[idx] = { ...connectedClients[idx], lastSeenAt: Date.now() };
+        scheduleRegistryChange();
+      }
+      let wss = null;
+      let httpServer = null;
+      const sessions = /* @__PURE__ */ new Map();
+      const connectionIdToInstanceId = /* @__PURE__ */ new Map();
+      let primaryClientId = null;
+      const pendingConnections = /* @__PURE__ */ new Map();
+      const connectionResolvers = [];
+      const wsOpenState = getWebSocketOpenState(WebSocketServer);
+      const diagnostics = {
+        socketsOpened: 0,
+        helloAttempts: 0,
+        helloRejections: 0,
+        helloSuccesses: 0,
+        lastHelloRejection: null
+      };
+      function debug(message, details) {
+        var _a;
+        (_a = logger.debug) == null ? void 0 : _a.call(logger, `[WechatsyncBridge] ${message}`, details || "");
+      }
+      function audit(event, details) {
+        var _a;
+        (_a = logger.info) == null ? void 0 : _a.call(logger, `[WechatsyncBridge:audit] ${event}`, details || {});
+      }
+      function isClientSocketOpen(ws) {
+        return !!(ws && ws.readyState === wsOpenState);
+      }
+      function isAuthenticatedConnected() {
+        for (const session of sessions.values()) {
+          if (isClientSocketOpen(session.ws))
+            return true;
+        }
+        return false;
+      }
+      function notifyConnected() {
+        while (connectionResolvers.length > 0) {
+          const resolve = connectionResolvers.shift();
+          resolve();
+        }
+      }
+      function tryParseHelloPayload(message) {
+        if (!message || typeof message !== "object")
+          return null;
+        if (message.type !== "extension_hello")
+          return null;
+        return {
+          type: "extension_hello",
+          token: typeof message.token === "string" ? message.token : "",
+          extensionInstanceId: typeof message.extensionInstanceId === "string" ? message.extensionInstanceId : "",
+          extensionId: typeof message.extensionId === "string" ? message.extensionId : "",
+          version: typeof message.version === "string" ? message.version : "",
+          profileLabel: typeof message.profileLabel === "string" ? message.profileLabel : "",
+          browserName: typeof message.browserName === "string" ? message.browserName : "",
+          capabilities: message.capabilities && typeof message.capabilities === "object" ? message.capabilities : {}
+        };
+      }
+      function sendHelloAck(ws, { ok, connectionId = "", error = "" }) {
+        var _a;
+        try {
+          const payload = ok ? {
+            type: "extension_hello_ack",
+            ok: true,
+            connectionId,
+            mode: "multi-client",
+            serverVersion: serverVersion || ""
+          } : {
+            type: "extension_hello_ack",
+            ok: false,
+            error
+          };
+          ws.send(JSON.stringify(payload));
+        } catch (err) {
+          (_a = logger.warn) == null ? void 0 : _a.call(logger, "Failed to send extension_hello_ack:", err);
+        }
+      }
+      function closeWs(ws, reason) {
+        var _a;
+        try {
+          (_a = ws.close) == null ? void 0 : _a.call(ws);
+        } catch (err) {
+          debug("Failed to close socket", { reason, error: (err == null ? void 0 : err.message) || String(err) });
+        }
+      }
+      function removePendingConnection(connectionId) {
+        const pending = pendingConnections.get(connectionId);
+        if (!pending)
+          return;
+        if (pending.helloTimeout)
+          clearTimeout(pending.helloTimeout);
+        pendingConnections.delete(connectionId);
+      }
+      function registerSession(pending, hello, origin) {
+        const instanceId = hello.extensionInstanceId;
+        const existing = sessions.get(instanceId);
+        if (existing) {
+          audit("hello_takeover", {
+            connectionId: existing.connectionId,
+            newConnectionId: pending.connectionId,
+            extensionInstanceId: instanceId,
+            previousSocketOpen: isClientSocketOpen(existing.ws)
+          });
+          closeWs(existing.ws, "hello_takeover");
+          connectionIdToInstanceId.delete(existing.connectionId);
+          for (const [, req] of existing.pendingRequests.entries()) {
+            clearTimeout(req.timeout);
+            req.reject(createReadableBridgeError(new Error("Session replaced by reconnect.")));
+          }
+          existing.pendingRequests.clear();
+          sessions.delete(instanceId);
+        }
+        let openCount = 0;
+        for (const s of sessions.values()) {
+          if (isClientSocketOpen(s.ws))
+            openCount += 1;
+        }
+        if (openCount >= maxClients) {
+          rejectHello(pending, HELLO_ERROR_TOO_MANY_CLIENTS, { max: maxClients, current: openCount });
+          return;
+        }
+        const session = {
+          connectionId: pending.connectionId,
+          ws: pending.ws,
+          extensionInstanceId: instanceId,
+          extensionId: hello.extensionId || "",
+          version: hello.version || "",
+          profileLabel: hello.profileLabel || "",
+          browserName: hello.browserName || "",
+          capabilities: hello.capabilities || {},
+          connectedAt: pending.connectedAt,
+          authenticatedAt: Date.now(),
+          origin: origin || pending.origin || "",
+          pendingRequests: /* @__PURE__ */ new Map()
+        };
+        sessions.set(instanceId, session);
+        connectionIdToInstanceId.set(pending.connectionId, instanceId);
+        removePendingConnection(pending.connectionId);
+        if (primaryClientId === null) {
+          primaryClientId = instanceId;
+        }
+        diagnostics.helloAttempts += 1;
+        diagnostics.helloSuccesses += 1;
+        audit("session_registered", {
+          connectionId: session.connectionId,
+          extensionInstanceId: instanceId,
+          profileLabel: session.profileLabel,
+          browserName: session.browserName,
+          sessionsCount: sessions.size
+        });
+        sendHelloAck(pending.ws, { ok: true, connectionId: pending.connectionId });
+        upsertConnectedClient(hello, "connected");
+        notifyConnected();
+      }
+      function rejectHello(pending, errorCode, details = {}) {
+        diagnostics.helloAttempts += 1;
+        diagnostics.helloRejections += 1;
+        diagnostics.lastHelloRejection = {
+          reason: errorCode,
+          at: Date.now(),
+          connectionId: pending.connectionId,
+          details: { ...details }
+        };
+        audit("hello_rejected", {
+          connectionId: pending.connectionId,
+          reason: errorCode,
+          ...details
+        });
+        sendHelloAck(pending.ws, { ok: false, error: errorCode });
+        removePendingConnection(pending.connectionId);
+        closeWs(pending.ws, `hello_rejected:${errorCode}`);
+      }
+      function handlePendingMessage(pending, raw, origin) {
+        var _a;
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch (error) {
+          (_a = logger.warn) == null ? void 0 : _a.call(logger, "Failed to parse pending bridge message:", error);
+          rejectHello(pending, HELLO_ERROR_INVALID_PAYLOAD, { parseError: true });
+          return;
+        }
+        const hello = tryParseHelloPayload(parsed);
+        if (!hello) {
+          rejectHello(pending, HELLO_ERROR_INVALID_PAYLOAD, { receivedType: (parsed == null ? void 0 : parsed.type) || "" });
+          return;
+        }
+        if (token && hello.token !== token) {
+          rejectHello(pending, HELLO_ERROR_TOKEN_MISMATCH, {
+            extensionInstanceId: hello.extensionInstanceId,
+            extensionId: hello.extensionId
+          });
+          return;
+        }
+        registerSession(pending, hello, origin);
+      }
+      function handleSessionMessage(session, raw) {
+        var _a, _b;
+        let message;
+        try {
+          message = JSON.parse(raw);
+        } catch (error) {
+          (_a = logger.warn) == null ? void 0 : _a.call(logger, "Failed to parse Wechatsync bridge response:", error);
+          return;
+        }
+        if ((message == null ? void 0 : message.type) === "extension_hello") {
+          debug("Ignoring extension_hello on already-authenticated session");
+          return;
+        }
+        if ((message == null ? void 0 : message.type) === "heartbeat") {
+          refreshClientSeen(session.extensionInstanceId);
+          if (isClientSocketOpen(session.ws)) {
+            try {
+              session.ws.send(JSON.stringify({ type: "heartbeat_ack", ts: message.ts }));
+            } catch (err) {
+              (_b = logger.warn) == null ? void 0 : _b.call(logger, "Failed to send heartbeat_ack:", (err == null ? void 0 : err.message) || err);
+            }
+          }
+          return;
+        }
+        const pending = session.pendingRequests.get(message.id);
+        if (!pending) {
+          debug("Received response for one-way, unknown, or timed out request", {
+            id: message.id,
+            hasError: !!message.error,
+            resultKind: Array.isArray(message.result) ? "array" : typeof message.result
+          });
+          return;
+        }
+        clearTimeout(pending.timeout);
+        session.pendingRequests.delete(message.id);
+        if (message.error) {
+          const errorMessage = message.error.message || message.error.error || String(message.error);
+          debug("Request failed", {
+            id: message.id,
+            method: pending.method,
+            elapsedMs: Date.now() - pending.startedAt,
+            error: errorMessage
+          });
+          pending.reject(createReadableBridgeError(new Error(errorMessage)));
+          return;
+        }
+        debug("Request completed", {
+          id: message.id,
+          method: pending.method,
+          elapsedMs: Date.now() - pending.startedAt,
+          resultKind: Array.isArray(message.result) ? "array" : typeof message.result
+        });
+        pending.resolve(message.result);
+      }
+      function registerConnection(ws, { origin = "" } = {}) {
+        const connectionId = connectionIdFactory();
+        diagnostics.socketsOpened += 1;
+        const pending = {
+          connectionId,
+          ws,
+          connectedAt: Date.now(),
+          origin,
+          helloTimeout: null
+        };
+        pendingConnections.set(connectionId, pending);
+        debug("Extension connected (pending hello)", { connectionId, origin });
+        pending.helloTimeout = setTimeout(() => {
+          if (!pendingConnections.has(connectionId))
+            return;
+          rejectHello(pending, HELLO_ERROR_TIMEOUT, { timeoutMs: helloTimeoutMs });
+        }, helloTimeoutMs);
+        ws.on("message", (data) => {
+          const raw = data.toString();
+          const stillPending = pendingConnections.get(connectionId);
+          if (stillPending) {
+            handlePendingMessage(stillPending, raw, origin);
+            return;
+          }
+          const instanceId = connectionIdToInstanceId.get(connectionId);
+          const session = instanceId ? sessions.get(instanceId) : null;
+          if (session)
+            handleSessionMessage(session, raw);
+        });
+        ws.on("close", () => {
+          removePendingConnection(connectionId);
+          const instanceId = connectionIdToInstanceId.get(connectionId);
+          if (instanceId) {
+            connectionIdToInstanceId.delete(connectionId);
+            const session = sessions.get(instanceId);
+            if (session) {
+              for (const [, req] of session.pendingRequests.entries()) {
+                clearTimeout(req.timeout);
+                req.reject(createReadableBridgeError(new Error("Extension disconnected.")));
+              }
+              session.pendingRequests.clear();
+              sessions.delete(instanceId);
+              markClientDisconnected(instanceId);
+              debug("Session disconnected", { connectionId, extensionInstanceId: instanceId });
+              if (primaryClientId === instanceId) {
+                primaryClientId = null;
+                for (const [id, s] of sessions.entries()) {
+                  if (isClientSocketOpen(s.ws)) {
+                    primaryClientId = id;
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        });
+        ws.on("error", (error) => {
+          var _a;
+          (_a = logger.warn) == null ? void 0 : _a.call(logger, "Wechatsync bridge WebSocket error:", error);
+        });
+      }
+      function isAuthorizedHttpRequest(req) {
+        if (!token)
+          return { ok: true };
+        const header = req.headers["authorization"] || req.headers["Authorization"] || "";
+        const value = Array.isArray(header) ? header[0] : header;
+        if (!value || typeof value !== "string") {
+          return { ok: false, status: 401, reason: "missing_authorization" };
+        }
+        const match = /^Bearer\s+(.+)$/i.exec(value.trim());
+        if (!match) {
+          return { ok: false, status: 401, reason: "invalid_authorization_scheme" };
+        }
+        if (match[1].trim() !== token) {
+          return { ok: false, status: 403, reason: "invalid_token" };
+        }
+        return { ok: true };
+      }
+      function denyHttpRequest(res, status, reason) {
+        res.writeHead(status, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: reason }));
+      }
+      async function startHttpApi() {
+        httpServer = http.createServer(async (req, res) => {
+          if (req.method === "OPTIONS") {
+            res.writeHead(204);
+            res.end();
+            return;
+          }
+          const auth = isAuthorizedHttpRequest(req);
+          if (!auth.ok) {
+            audit("http_request_unauthorized", {
+              url: req.url,
+              method: req.method,
+              reason: auth.reason
+            });
+            denyHttpRequest(res, auth.status, auth.reason);
+            return;
+          }
+          if (req.method === "GET" && req.url === "/status") {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              connected: isAuthenticatedConnected(),
+              mode: "primary",
+              authenticated: isAuthenticatedConnected(),
+              pendingConnections: pendingConnections.size,
+              host: bindHost,
+              allowRemote: !!allowRemote
+            }));
+            return;
+          }
+          if (req.method === "POST" && req.url === "/request") {
+            try {
+              const body = await readRequestBody(req);
+              const { method, params, timeoutMs } = JSON.parse(body || "{}");
+              const result = await requestInternal(method, params, { timeoutMs });
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ result }));
+            } catch (error) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: error.message || String(error) }));
+            }
+            return;
+          }
+          if (req.method === "POST" && req.url === "/send") {
+            try {
+              const body = await readRequestBody(req);
+              const { method, params } = JSON.parse(body || "{}");
+              const result = sendInternal(method, params);
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ result }));
+            } catch (error) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: error.message || String(error) }));
+            }
+            return;
+          }
+          res.writeHead(404);
+          res.end("Not found");
+        });
+        await new Promise((resolve, reject) => {
+          httpServer.once("error", reject);
+          httpServer.listen({ port: port + 1, host: bindHost }, () => {
+            var _a;
+            (_a = httpServer.off) == null ? void 0 : _a.call(httpServer, "error", reject);
+            resolve();
+          });
+        });
+      }
+      async function startServer() {
+        await new Promise((resolve, reject) => {
+          try {
+            wss = WebSocketServer ? new WebSocketServer({ port, host: bindHost }) : createMinimalWebSocketServer({ http, port, host: bindHost, originAllowlist, logger });
+          } catch (error) {
+            reject(error);
+            return;
+          }
+          wss.once("listening", resolve);
+          wss.once("error", reject);
+          wss.on("connection", (ws, request3) => {
+            var _a;
+            const origin = ((_a = request3 == null ? void 0 : request3.headers) == null ? void 0 : _a.origin) || (request3 == null ? void 0 : request3.origin) || "";
+            registerConnection(ws, { origin });
+          });
+        });
+        try {
+          await startHttpApi();
+        } catch (error) {
+          if (wss) {
+            await new Promise((resolve) => wss.close(resolve));
+            wss = null;
+          }
+          throw error;
+        }
+      }
+      async function start() {
+        if (wss) {
+          return getStatus();
+        }
+        try {
+          await startServer();
+          debug("Bridge started", {
+            port,
+            httpPort: port + 1,
+            host: bindHost,
+            allowRemote
+          });
+        } catch (error) {
+          throw createReadableBridgeError(error);
+        }
+        return getStatus();
+      }
+      async function stop() {
+        for (const session of sessions.values()) {
+          for (const [id, req] of session.pendingRequests.entries()) {
+            clearTimeout(req.timeout);
+            req.reject(new Error(`Request cancelled: ${id}`));
+          }
+          session.pendingRequests.clear();
+          closeWs(session.ws, "stop");
+        }
+        sessions.clear();
+        connectionIdToInstanceId.clear();
+        primaryClientId = null;
+        for (const pending of pendingConnections.values()) {
+          if (pending.helloTimeout)
+            clearTimeout(pending.helloTimeout);
+          closeWs(pending.ws, "stop");
+        }
+        pendingConnections.clear();
+        if (wss) {
+          await new Promise((resolve) => wss.close(resolve));
+          wss = null;
+        }
+        if (httpServer) {
+          await new Promise((resolve) => httpServer.close(resolve));
+          httpServer = null;
+        }
+      }
+      function waitForConnection(timeoutMs = connectTimeoutMs) {
+        if (isAuthenticatedConnected())
+          return Promise.resolve();
+        return new Promise((resolve, reject) => {
+          let wrappedResolve;
+          const timeout = setTimeout(() => {
+            const index = connectionResolvers.indexOf(wrappedResolve);
+            if (index >= 0)
+              connectionResolvers.splice(index, 1);
+            reject(createReadableBridgeError(new Error("timeout:no_extension")));
+          }, timeoutMs);
+          wrappedResolve = () => {
+            clearTimeout(timeout);
+            resolve();
+          };
+          connectionResolvers.push(wrappedResolve);
+        });
+      }
+      function requestInternal(method, params, options2 = {}) {
+        if (!method) {
+          return Promise.reject(new Error("Wechatsync bridge method is required."));
+        }
+        const session = primaryClientId ? sessions.get(primaryClientId) : null;
+        if (!session) {
+          if (pendingConnections.size > 0) {
+            return Promise.reject(createReadableBridgeError(new Error("Extension not authenticated.")));
+          }
+          return Promise.reject(createReadableBridgeError(new Error("Extension not connected.")));
+        }
+        if (!isClientSocketOpen(session.ws)) {
+          return Promise.reject(createReadableBridgeError(new Error("Extension not connected.")));
+        }
+        const id = idFactory();
+        const message = { id, method, params };
+        if (token)
+          message.token = token;
+        const timeoutMs = Number.isFinite(Number(options2.timeoutMs)) && Number(options2.timeoutMs) > 0 ? Number(options2.timeoutMs) : requestTimeoutMs;
+        return new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            session.pendingRequests.delete(id);
+            debug("Request timed out", { id, method, timeoutMs });
+            reject(createReadableBridgeError(new Error(`Request timeout: ${method}`)));
+          }, timeoutMs);
+          session.pendingRequests.set(id, { resolve, reject, timeout, method, startedAt: Date.now() });
+          debug("Sending request", {
+            id,
+            method,
+            timeoutMs,
+            connectionId: session.connectionId,
+            extensionInstanceId: session.extensionInstanceId,
+            paramKeys: params && typeof params === "object" ? Object.keys(params) : []
+          });
+          session.ws.send(JSON.stringify(message));
+        });
+      }
+      function sendInternal(method, params) {
+        if (!method) {
+          throw new Error("Wechatsync bridge method is required.");
+        }
+        const session = primaryClientId ? sessions.get(primaryClientId) : null;
+        if (!session) {
+          if (pendingConnections.size > 0) {
+            throw createReadableBridgeError(new Error("Extension not authenticated."));
+          }
+          throw createReadableBridgeError(new Error("Extension not connected."));
+        }
+        if (!isClientSocketOpen(session.ws)) {
+          throw createReadableBridgeError(new Error("Extension not connected."));
+        }
+        const id = idFactory();
+        const message = { id, method, params };
+        if (token)
+          message.token = token;
+        debug("Sending one-way request", {
+          id,
+          method,
+          connectionId: session.connectionId,
+          extensionInstanceId: session.extensionInstanceId,
+          paramKeys: params && typeof params === "object" ? Object.keys(params) : []
+        });
+        session.ws.send(JSON.stringify(message));
+        return { accepted: true, requestId: id, method };
+      }
+      async function request2(method, params, options2 = {}) {
+        await start();
+        return requestInternal(method, params, options2);
+      }
+      async function requestWithMethodFallback(method, fallbackMethod, params, options2 = {}) {
+        try {
+          return await request2(method, params, options2);
+        } catch (error) {
+          if (!fallbackMethod || !isUnsupportedBridgeMethodError(error))
+            throw error;
+          debug("Retrying request with fallback method", {
+            method,
+            fallbackMethod,
+            code: error == null ? void 0 : error.code,
+            message: (error == null ? void 0 : error.message) || String(error)
+          });
+          return request2(fallbackMethod, params, options2);
+        }
+      }
+      async function send(method, params) {
+        await start();
+        return sendInternal(method, params);
+      }
+      function listPlatforms({ forceRefresh = false, timeoutMs = DEFAULT_PLATFORM_REQUEST_TIMEOUT_MS } = {}) {
+        return request2("listPlatforms", { forceRefresh }, { timeoutMs });
+      }
+      function health({ timeoutMs = 5e3 } = {}) {
+        return request2("health", {}, { timeoutMs });
+      }
+      function listSupportedPlatforms({ timeoutMs = DEFAULT_PLATFORM_REQUEST_TIMEOUT_MS } = {}) {
+        return requestWithMethodFallback("listSupportedPlatforms", "list_supported_platforms", {}, { timeoutMs });
+      }
+      function checkAuth(platformOrPlatforms, { timeoutMs = DEFAULT_PLATFORM_REQUEST_TIMEOUT_MS, forceRefresh = false } = {}) {
+        const params = Array.isArray(platformOrPlatforms) ? { platforms: platformOrPlatforms, forceRefresh } : { platform: platformOrPlatforms, forceRefresh };
+        return requestWithMethodFallback("checkAuth", "check_auth", params, { timeoutMs });
+      }
+      function syncArticle({ platforms, title, markdown, content, cover, coverThumbnail, assets, quotaPolicy, timeoutMs = DEFAULT_SYNC_REQUEST_TIMEOUT_MS }) {
+        const article = { title, markdown, content, cover, assets };
+        if (coverThumbnail)
+          article.coverThumbnail = coverThumbnail;
+        const params = { platforms, article };
+        if (quotaPolicy === "block" || quotaPolicy === "truncate") {
+          params.quotaPolicy = quotaPolicy;
+        }
+        return request2("syncArticle", params, { timeoutMs });
+      }
+      function enqueueSyncArticle({
+        platforms,
+        title,
+        markdown,
+        content,
+        cover,
+        coverThumbnail,
+        assets,
+        source = "obsidian",
+        quotaPolicy,
+        timeoutMs = 1e4
+      }) {
+        const article = { title, markdown, content, cover, assets };
+        if (coverThumbnail)
+          article.coverThumbnail = coverThumbnail;
+        const params = { platforms, source, article };
+        if (quotaPolicy === "block" || quotaPolicy === "truncate") {
+          params.quotaPolicy = quotaPolicy;
+        }
+        return requestWithMethodFallback("enqueueSyncArticle", "enqueue_sync_article", params, { timeoutMs });
+      }
+      function getSyncTask(syncIdOrOptions, { timeoutMs = 5e3 } = {}) {
+        const params = typeof syncIdOrOptions === "object" && syncIdOrOptions !== null ? { syncId: syncIdOrOptions.syncId } : { syncId: syncIdOrOptions };
+        return requestWithMethodFallback("getSyncTask", "get_sync_task", params, { timeoutMs });
+      }
+      function getSyncTaskLink(syncIdOrOptions, { timeoutMs = 5e3 } = {}) {
+        const params = typeof syncIdOrOptions === "object" && syncIdOrOptions !== null ? { syncId: syncIdOrOptions.syncId } : { syncId: syncIdOrOptions };
+        return requestWithMethodFallback("getSyncTaskLink", "get_sync_task_link", params, { timeoutMs });
+      }
+      function openSyncTask(syncIdOrOptions, { timeoutMs = 5e3 } = {}) {
+        const params = typeof syncIdOrOptions === "object" && syncIdOrOptions !== null ? { syncId: syncIdOrOptions.syncId } : { syncId: syncIdOrOptions };
+        return requestWithMethodFallback("openSyncTask", "open_sync_task", params, { timeoutMs });
+      }
+      function getAuthSnapshot({ platforms = [], maxAgeMs = 864e5, timeoutMs = 5e3 } = {}) {
+        return requestWithMethodFallback("getAuthSnapshot", "get_auth_snapshot", {
+          platforms,
+          maxAgeMs
+        }, { timeoutMs });
+      }
+      function sendArticle({ platforms, title, markdown, content, cover, coverThumbnail, assets, quotaPolicy }) {
+        const article = { title, markdown, content, cover, assets };
+        if (coverThumbnail)
+          article.coverThumbnail = coverThumbnail;
+        const params = { platforms, article };
+        if (quotaPolicy === "block" || quotaPolicy === "truncate") {
+          params.quotaPolicy = quotaPolicy;
+        }
+        return send("syncArticle", params);
+      }
+      async function getStatus() {
+        return {
+          mode: "primary",
+          connected: isAuthenticatedConnected(),
+          authenticated: isAuthenticatedConnected(),
+          pendingConnections: pendingConnections.size,
+          host: bindHost,
+          allowRemote: !!allowRemote,
+          port,
+          connectedClients: connectedClients.map((c) => ({ ...c })),
+          primaryClientId,
+          maxClients,
+          diagnostics: getDiagnostics()
+        };
+      }
+      function getDiagnostics() {
+        return {
+          socketsOpened: diagnostics.socketsOpened,
+          helloAttempts: diagnostics.helloAttempts,
+          helloRejections: diagnostics.helloRejections,
+          helloSuccesses: diagnostics.helloSuccesses,
+          pendingConnections: pendingConnections.size,
+          lastHelloRejection: diagnostics.lastHelloRejection ? { ...diagnostics.lastHelloRejection, details: { ...diagnostics.lastHelloRejection.details || {} } } : null
+        };
+      }
+      function getActiveClientDescriptor() {
+        const session = primaryClientId ? sessions.get(primaryClientId) : null;
+        if (!session)
+          return null;
+        return {
+          connectionId: session.connectionId,
+          extensionInstanceId: session.extensionInstanceId,
+          extensionId: session.extensionId,
+          version: session.version,
+          profileLabel: session.profileLabel,
+          browserName: session.browserName,
+          capabilities: { ...session.capabilities || {} },
+          connectedAt: session.connectedAt,
+          authenticatedAt: session.authenticatedAt,
+          origin: session.origin
+        };
+      }
+      return {
+        start,
+        stop,
+        waitForConnection,
+        getStatus,
+        getDiagnostics,
+        getActiveClientDescriptor,
+        health,
+        listSupportedPlatforms,
+        listPlatforms,
+        checkAuth,
+        syncArticle,
+        enqueueSyncArticle,
+        getSyncTask,
+        getSyncTaskLink,
+        openSyncTask,
+        getAuthSnapshot,
+        sendArticle,
+        _request: request2,
+        _send: send
+      };
+    }
+    module2.exports = {
+      DEFAULT_WECHATSYNC_PORT: DEFAULT_WECHATSYNC_PORT2,
+      DEFAULT_SYNC_REQUEST_TIMEOUT_MS,
+      DEFAULT_HELLO_TIMEOUT_MS,
+      LOCAL_BIND_HOST,
+      REMOTE_BIND_HOST,
+      HELLO_ERROR_TOKEN_MISMATCH,
+      HELLO_ERROR_INVALID_PAYLOAD,
+      HELLO_ERROR_TIMEOUT,
+      HELLO_ERROR_VERSION_UNSUPPORTED,
+      HELLO_ERROR_DUPLICATE_SESSION,
+      HELLO_ERROR_TOO_MANY_CLIENTS,
+      DEFAULT_MAX_CLIENTS,
+      createReadableBridgeError,
+      createWechatSyncBridgeService: createWechatSyncBridgeService2,
+      isOriginAllowedForWebSocket,
+      isRecoverableBridgeConnectionError,
+      isUnsupportedBridgeMethodError,
+      parseWebSocketFrames,
+      retryRecoverableBridgeOperation: retryRecoverableBridgeOperation2
+    };
+  }
+});
+
+// services/wechatsync-results.js
+var require_wechatsync_results = __commonJS({
+  "services/wechatsync-results.js"(exports2, module2) {
+    var FEATURED_WECHATSYNC_PLATFORM_ORDER = [
+      "xiaohongshu",
+      "zhihu",
+      "weibo",
+      "douyin",
+      "toutiao",
+      "bilibili",
+      "csdn",
+      "yuque",
+      "jianshu",
+      "smzdm"
+    ];
+    var FEATURED_WECHATSYNC_PLATFORM_RANK = new Map(
+      FEATURED_WECHATSYNC_PLATFORM_ORDER.map((id, index) => [id, index])
+    );
+    var FALLBACK_WECHATSYNC_PLATFORMS = [
+      { id: "xiaohongshu", name: "\u5C0F\u7EA2\u4E66", homepage: "https://creator.xiaohongshu.com/publish/publish?from=menu&target=article", capabilities: ["article", "draft", "image_upload"] },
+      { id: "zhihu", name: "\u77E5\u4E4E", homepage: "https://www.zhihu.com", capabilities: ["article", "draft", "image_upload", "tags", "cover"] },
+      { id: "weibo", name: "\u5FAE\u535A", homepage: "https://card.weibo.com/article/v5/editor", capabilities: ["article", "draft", "image_upload", "cover"] },
+      { id: "douyin", name: "\u6296\u97F3\u56FE\u6587", homepage: "https://creator.douyin.com", capabilities: ["article", "draft", "image_upload"] },
+      { id: "toutiao", name: "\u5934\u6761\u53F7", homepage: "https://mp.toutiao.com/profile_v4/graphic/publish", capabilities: ["article", "draft", "image_upload", "cover"] },
+      { id: "bilibili", name: "B\u7AD9\u4E13\u680F", homepage: "https://member.bilibili.com/platform/upload/text", capabilities: ["article", "draft", "image_upload"] },
+      { id: "csdn", name: "CSDN", homepage: "https://editor.csdn.net/md/", capabilities: ["article", "draft", "image_upload"] },
+      { id: "yuque", name: "\u8BED\u96C0", homepage: "https://www.yuque.com/dashboard", capabilities: ["article", "draft", "image_upload"] },
+      { id: "jianshu", name: "\u7B80\u4E66", homepage: "https://www.jianshu.com", capabilities: ["article", "draft", "image_upload", "categories"] },
+      { id: "smzdm", name: "\u4EC0\u4E48\u503C\u5F97\u4E70", homepage: "https://post.smzdm.com/tougao/", capabilities: ["article", "draft", "image_upload"] },
+      { id: "juejin", name: "\u6398\u91D1", homepage: "https://juejin.cn", capabilities: ["article", "draft", "image_upload", "categories", "tags", "cover"] },
+      { id: "baijiahao", name: "\u767E\u5BB6\u53F7", homepage: "https://baijiahao.baidu.com/", capabilities: ["article", "draft", "image_upload"] },
+      { id: "douban", name: "\u8C46\u74E3", homepage: "https://www.douban.com/note/create", capabilities: ["article", "draft", "image_upload"] },
+      { id: "sohu", name: "\u641C\u72D0\u53F7", homepage: "https://mp.sohu.com/mpfe/v3/main/first/page?newsType=1", capabilities: ["article", "draft", "image_upload"] },
+      { id: "xueqiu", name: "\u96EA\u7403", homepage: "https://mp.xueqiu.com/writeV2", capabilities: ["article", "draft", "image_upload"] },
+      { id: "woshipm", name: "\u4EBA\u4EBA\u90FD\u662F\u4EA7\u54C1\u7ECF\u7406", homepage: "https://www.woshipm.com", capabilities: ["article", "draft", "image_upload"] },
+      { id: "dayu", name: "\u5927\u9C7C\u53F7", homepage: "https://mp.dayu.com/dashboard/account/profile", capabilities: ["article", "draft", "image_upload"] },
+      { id: "yidian", name: "\u4E00\u70B9\u53F7", homepage: "https://mp.yidianzixun.com", capabilities: ["article", "draft", "image_upload"] },
+      { id: "51cto", name: "51CTO", homepage: "https://blog.51cto.com/blogger/publish", capabilities: ["article", "draft", "image_upload"] },
+      { id: "imooc", name: "\u6155\u8BFE\u624B\u8BB0", homepage: "https://www.imooc.com/article", capabilities: ["article", "draft", "image_upload"] },
+      { id: "oschina", name: "\u5F00\u6E90\u4E2D\u56FD", homepage: "https://my.oschina.net", capabilities: ["article", "draft", "image_upload"] },
+      { id: "segmentfault", name: "\u601D\u5426", homepage: "https://segmentfault.com/user/draft", capabilities: ["article", "draft", "image_upload"] },
+      { id: "cnblogs", name: "\u535A\u5BA2\u56ED", homepage: "https://www.cnblogs.com", capabilities: ["article", "draft", "image_upload"] },
+      { id: "sohufocus", name: "\u641C\u72D0\u7126\u70B9", homepage: "https://mp.focus.cn/fe/index.html#/info/draft", capabilities: ["article", "draft", "image_upload"] },
+      { id: "x", name: "X (Twitter)", homepage: "https://x.com/compose/articles", capabilities: ["article", "draft", "image_upload"] },
+      { id: "eastmoney", name: "\u4E1C\u65B9\u8D22\u5BCC", homepage: "https://mp.eastmoney.com", capabilities: ["article", "draft", "image_upload", "cover"] },
+      { id: "netease", name: "\u7F51\u6613\u53F7", homepage: "https://mp.163.com/#/article-publish", capabilities: ["article", "draft", "image_upload"] },
+      { id: "wordpress", name: "WordPress", homepage: "", capabilities: ["article", "draft", "image_upload"] },
+      { id: "typecho", name: "Typecho", homepage: "", capabilities: ["article", "draft", "image_upload"] },
+      { id: "zip-download", name: "Markdown \u538B\u7F29\u5305", homepage: "", capabilities: ["article"] }
+    ];
+    function getFallbackWechatsyncPlatforms2() {
+      return FALLBACK_WECHATSYNC_PLATFORMS.map((platform) => ({ ...platform }));
+    }
+    function isPlatformNotFoundError(error = "") {
+      return /platform not found|adapter not found|not found/i.test(String(error || ""));
+    }
+    function normalizeWechatsyncCapabilities(platform = {}) {
+      const rawCapabilities = Array.isArray(platform.capabilities) ? platform.capabilities : [];
+      const capabilitySet = new Set(rawCapabilities.map((capability) => String(capability || "").trim()).filter(Boolean));
+      if (platform.supportsArticle === true)
+        capabilitySet.add("article");
+      if (platform.supportsDraft === true || platform.draft === true)
+        capabilitySet.add("draft");
+      if (platform.supportsImageUpload === true || platform.imageUpload === true || platform.supportsImages === true) {
+        capabilitySet.add("image_upload");
+      }
+      if (platform.supportsCover === true || platform.cover === true)
+        capabilitySet.add("cover");
+      if (platform.supportsTags === true || platform.tags === true)
+        capabilitySet.add("tags");
+      if (platform.supportsCategories === true || platform.categories === true)
+        capabilitySet.add("categories");
+      return Array.from(capabilitySet);
+    }
+    function normalizeWechatsyncPlatform2(platform = {}) {
+      const id = String(platform.id || platform.type || platform.platform || "").trim();
+      if (!id || id === "weixin")
+        return null;
+      const nestedAuth = platform.auth && typeof platform.auth === "object" ? platform.auth : {};
+      const user = platform.user && typeof platform.user === "object" ? platform.user : {};
+      const rawStatus = String(platform.status || platform.authStatus || platform.authState || "").trim();
+      const authStatus = ["available", "login_required", "unknown", "bridge_required"].includes(rawStatus) ? rawStatus : "";
+      const hasExplicitAuthKnown = Object.prototype.hasOwnProperty.call(platform, "authKnown");
+      const authKnown = hasExplicitAuthKnown ? platform.authKnown === true : Object.prototype.hasOwnProperty.call(platform, "isAuthenticated") || Object.prototype.hasOwnProperty.call(platform, "authenticated") || Object.prototype.hasOwnProperty.call(platform, "isAuth") || Object.prototype.hasOwnProperty.call(platform, "loggedIn") || Object.prototype.hasOwnProperty.call(nestedAuth, "isAuthenticated") || Object.prototype.hasOwnProperty.call(nestedAuth, "authenticated") || Object.prototype.hasOwnProperty.call(nestedAuth, "loggedIn") || typeof platform.status === "string";
+      return {
+        id,
+        name: String(platform.name || platform.title || platform.platformName || id),
+        homepage: typeof platform.homepage === "string" ? platform.homepage : "",
+        icon: typeof platform.icon === "string" ? platform.icon : "",
+        capabilities: normalizeWechatsyncCapabilities(platform),
+        authStatus,
+        authKnown,
+        authenticated: platform.isAuthenticated === true || platform.authenticated === true || platform.isAuth === true || platform.loggedIn === true || nestedAuth.isAuthenticated === true || nestedAuth.authenticated === true || nestedAuth.loggedIn === true || authStatus === "available" || platform.status === "authenticated" || platform.status === "logged_in" || platform.status === "\u5DF2\u767B\u5F55",
+        username: typeof platform.username === "string" ? platform.username : typeof platform.accountName === "string" ? platform.accountName : typeof nestedAuth.username === "string" ? nestedAuth.username : typeof user.name === "string" ? user.name : "",
+        error: typeof platform.error === "string" ? platform.error : ""
+      };
+    }
+    function getWechatsyncPlatformStatus(platform = {}, options = {}) {
+      if (options.bridgeConnected === false || platform.authStatus === "bridge_required")
+        return "bridge_required";
+      const explicitStatus = String(platform.authStatus || platform.authState || "").trim();
+      if (["available", "login_required", "unknown", "bridge_required"].includes(explicitStatus))
+        return explicitStatus;
+      if (!platform.authKnown)
+        return "unknown";
+      return platform.authenticated ? "available" : "login_required";
+    }
+    function getWechatsyncPlatformStatusBadge2(platform = {}, options = {}) {
+      const status = getWechatsyncPlatformStatus(platform, options);
+      if (status === "bridge_required")
+        return { status, text: "\u9700\u8FDE\u63A5\u6D4F\u89C8\u5668\u63D2\u4EF6", cls: "is-bridge" };
+      if (status === "available") {
+        return {
+          status,
+          text: platform.username ? `\u4E0A\u6B21\u53EF\u7528 \xB7 ${platform.username}` : "\u4E0A\u6B21\u53EF\u7528",
+          cls: "is-ok"
+        };
+      }
+      if (status === "login_required") {
+        return { status, text: platform.error || "\u9700\u767B\u5F55", cls: "is-error" };
+      }
+      return { status: "unknown", text: "\u672A\u68C0\u6D4B", cls: "is-unknown" };
+    }
+    function getWechatsyncPlatformIdFromItem(item = {}) {
+      return String((item == null ? void 0 : item.id) || (item == null ? void 0 : item.platform) || (item == null ? void 0 : item.type) || item || "").trim();
+    }
+    function getWechatsyncPlatformSortRank(platformId = "") {
+      return FEATURED_WECHATSYNC_PLATFORM_RANK.has(platformId) ? FEATURED_WECHATSYNC_PLATFORM_RANK.get(platformId) : FEATURED_WECHATSYNC_PLATFORM_ORDER.length + 1e3;
+    }
+    function isWechatsyncPlatformAuthenticated(platform = {}, bridgeConnected = true) {
+      if (bridgeConnected === false)
+        return false;
+      const status = getWechatsyncPlatformStatus(platform, { bridgeConnected });
+      return status === "available" || (platform == null ? void 0 : platform.authenticated) === true;
+    }
+    function sortWechatsyncPlatformItemsForDisplay2(items = [], options = {}) {
+      const {
+        bridgeConnected = true,
+        authenticatedFirst = bridgeConnected !== false,
+        getPlatformId = getWechatsyncPlatformIdFromItem,
+        getPlatform = (item) => item
+      } = options;
+      return (Array.isArray(items) ? items : []).map((item, originalIndex) => ({ item, originalIndex })).sort((a, b) => {
+        const aPlatform = getPlatform(a.item) || {};
+        const bPlatform = getPlatform(b.item) || {};
+        if (authenticatedFirst) {
+          const authDiff = Number(isWechatsyncPlatformAuthenticated(bPlatform, bridgeConnected)) - Number(isWechatsyncPlatformAuthenticated(aPlatform, bridgeConnected));
+          if (authDiff !== 0)
+            return authDiff;
+        }
+        const aRank = getWechatsyncPlatformSortRank(getPlatformId(a.item));
+        const bRank = getWechatsyncPlatformSortRank(getPlatformId(b.item));
+        return aRank - bRank || a.originalIndex - b.originalIndex;
+      }).map(({ item }) => item);
+    }
+    function sortWechatsyncPlatformsForDisplay(platforms = [], options = {}) {
+      return sortWechatsyncPlatformItemsForDisplay2(platforms, {
+        ...options,
+        getPlatformId: (platform) => platform == null ? void 0 : platform.id,
+        getPlatform: (platform) => platform
+      });
+    }
+    function buildWechatsyncPlatformCatalog2(options = {}) {
+      var _a;
+      const {
+        fallbackPlatforms = getFallbackWechatsyncPlatforms2(),
+        supportedPlatforms = [],
+        authSnapshotPlatforms = [],
+        bridgeConnected = true
+      } = options;
+      const normalizedSupported = normalizeWechatsyncPlatformList2(supportedPlatforms);
+      const basePlatforms = bridgeConnected && normalizedSupported.length ? normalizedSupported : normalizeWechatsyncPlatformList2(fallbackPlatforms);
+      const authById = new Map(
+        normalizeWechatsyncPlatformList2(authSnapshotPlatforms).map((platform) => [platform.id, platform])
+      );
+      const catalog = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const base of basePlatforms) {
+        const auth = authById.get(base.id);
+        const merged = {
+          ...base,
+          ...auth || {},
+          name: base.name || (auth == null ? void 0 : auth.name) || base.id,
+          homepage: base.homepage || (auth == null ? void 0 : auth.homepage) || "",
+          icon: base.icon || (auth == null ? void 0 : auth.icon) || "",
+          capabilities: ((_a = base.capabilities) == null ? void 0 : _a.length) ? base.capabilities : (auth == null ? void 0 : auth.capabilities) || []
+        };
+        catalog.push(bridgeConnected ? auth ? merged : { ...merged, authKnown: false, authenticated: false, username: "", error: "" } : { ...merged, authStatus: "bridge_required", authKnown: true, authenticated: false, username: "", error: "" });
+        seen.add(base.id);
+      }
+      if (bridgeConnected) {
+        for (const auth of authById.values()) {
+          if (seen.has(auth.id))
+            continue;
+          catalog.push(auth);
+        }
+      }
+      return sortWechatsyncPlatformsForDisplay(catalog, {
+        bridgeConnected,
+        authenticatedFirst: bridgeConnected
+      });
+    }
+    function normalizeWechatsyncCheckAuthResult(candidate = {}, auth = {}) {
+      const error = typeof (auth == null ? void 0 : auth.error) === "string" ? auth.error : "";
+      if (isPlatformNotFoundError(error))
+        return null;
+      return normalizeWechatsyncPlatform2({
+        ...auth,
+        id: candidate.id,
+        name: candidate.name,
+        type: candidate.id,
+        platform: candidate.id
+      });
+    }
+    async function probeWechatsyncPlatformsIndividually2(bridge, options = {}) {
+      const {
+        candidates = getFallbackWechatsyncPlatforms2(),
+        timeoutMs = 6e3,
+        concurrency = 4,
+        logger = console
+      } = options;
+      const results = [];
+      for (let i = 0; i < candidates.length; i += concurrency) {
+        const batch = candidates.slice(i, i + concurrency);
+        const batchResults = await Promise.all(batch.map(async (candidate) => {
+          var _a, _b;
+          try {
+            const auth = await bridge.checkAuth(candidate.id, { timeoutMs });
+            const normalized = normalizeWechatsyncCheckAuthResult(candidate, auth);
+            (_a = logger.debug) == null ? void 0 : _a.call(logger, "[Wechatsync] fallback checkAuth result", {
+              id: candidate.id,
+              name: candidate.name,
+              authenticated: normalized == null ? void 0 : normalized.authenticated,
+              error: (auth == null ? void 0 : auth.error) || ""
+            });
+            return normalized;
+          } catch (error) {
+            (_b = logger.debug) == null ? void 0 : _b.call(logger, "[Wechatsync] fallback checkAuth failed", {
+              id: candidate.id,
+              name: candidate.name,
+              code: error == null ? void 0 : error.code,
+              message: (error == null ? void 0 : error.message) || String(error)
+            });
+            return null;
+          }
+        }));
+        results.push(...batchResults.filter(Boolean));
+      }
+      const byId = /* @__PURE__ */ new Map();
+      for (const platform of results) {
+        if (!byId.has(platform.id))
+          byId.set(platform.id, platform);
+      }
+      return Array.from(byId.values());
+    }
+    function normalizeWechatsyncPlatformList2(response) {
+      const candidates = Array.isArray(response) ? response : Array.isArray(response == null ? void 0 : response.platforms) ? response.platforms : Array.isArray(response == null ? void 0 : response.result) ? response.result : Array.isArray(response == null ? void 0 : response.data) ? response.data : [];
+      return candidates.map((platform) => normalizeWechatsyncPlatform2(platform)).filter(Boolean);
+    }
+    function normalizeWechatsyncAuthSnapshot2(response = {}, fallbackPlatforms = []) {
+      const source = response && typeof response === "object" ? response : {};
+      const fallbackById = new Map(
+        (Array.isArray(fallbackPlatforms) ? fallbackPlatforms : []).map((platform) => normalizeWechatsyncPlatform2(platform)).filter(Boolean).map((platform) => [platform.id, platform])
+      );
+      const platforms = normalizeWechatsyncPlatformList2(source).map((platform) => {
+        const fallback = fallbackById.get(platform.id) || {};
+        return {
+          ...fallback,
+          ...platform,
+          name: platform.name && platform.name !== platform.id ? platform.name : fallback.name || platform.name
+        };
+      });
+      const checkedAt = Number.isFinite(Number(source.checkedAt)) ? Number(source.checkedAt) : platforms.reduce((latest, platform) => {
+        const candidate = Number(platform.checkedAt || platform.lastSuccessAt || platform.lastFailureAt || 0);
+        return Number.isFinite(candidate) && candidate > latest ? candidate : latest;
+      }, 0);
+      return {
+        source: typeof source.source === "string" ? source.source : "cache",
+        checkedAt,
+        platforms
+      };
+    }
+    function summarizeWechatsyncPlatformResponse2(response) {
+      const rawPlatforms = Array.isArray(response) ? response : Array.isArray(response == null ? void 0 : response.platforms) ? response.platforms : Array.isArray(response == null ? void 0 : response.result) ? response.result : Array.isArray(response == null ? void 0 : response.data) ? response.data : [];
+      const normalized = normalizeWechatsyncPlatformList2(response);
+      return {
+        responseKind: Array.isArray(response) ? "array" : typeof response,
+        rawCount: rawPlatforms.length,
+        normalizedCount: normalized.length,
+        authenticatedCount: normalized.filter((platform) => platform.authenticated).length,
+        platforms: normalized.map((platform) => ({
+          id: platform.id,
+          name: platform.name,
+          authenticated: platform.authenticated,
+          username: platform.username
+        }))
+      };
+    }
+    function getWechatSyncResultPlatformId2(result = {}) {
+      return String(result.platform || result.id || result.type || "").trim();
+    }
+    function getWechatSyncResultError2(result = {}) {
+      return String(result.error || result.message || "").trim();
+    }
+    function getWechatSyncResultUrl2(result = {}) {
+      return String(result.postUrl || result.draftUrl || result.editUrl || result.url || result.link || "").trim();
+    }
+    function isWechatSyncAuthFailureMessage(message = "") {
+      return /未登录|登录|auth|unauthori[sz]ed|forbidden|cookie|token|鉴权|401|403/i.test(String(message || ""));
+    }
+    function isWechatSyncConnectionFailure2(error = {}) {
+      return ["AUTH_FAILED", "EXTENSION_NOT_CONNECTED", "EXTENSION_NOT_AUTHENTICATED", "BRIDGE_UNAVAILABLE", "PLATFORM_LIST_TIMEOUT"].includes(error == null ? void 0 : error.code);
+    }
+    function normalizeWechatSyncResponseResults2(result) {
+      if (Array.isArray(result == null ? void 0 : result.results))
+        return result.results.filter(Boolean);
+      if (Array.isArray(result))
+        return result.filter(Boolean);
+      if (result && typeof result === "object" && "success" in result)
+        return [result];
+      return [];
+    }
+    function getMultiPlatformResultSummary2(results = [], requestedPlatformIds = [], fatalError = null) {
+      const normalizedResults = normalizeWechatSyncResponseResults2(results);
+      const successResults = normalizedResults.filter((item) => (item == null ? void 0 : item.success) === true);
+      const failedResults = normalizedResults.filter((item) => (item == null ? void 0 : item.success) === false);
+      const authFailedResults = failedResults.filter((item) => isWechatSyncAuthFailureMessage(getWechatSyncResultError2(item)));
+      const totalCount = normalizedResults.length || requestedPlatformIds.length;
+      return {
+        normalizedResults,
+        successResults,
+        failedResults,
+        authFailedResults,
+        successCount: successResults.length,
+        failedCount: failedResults.length,
+        totalCount,
+        isAllSuccess: totalCount > 0 && !fatalError && successResults.length === totalCount
+      };
+    }
+    function updateCachedPlatformsAfterSync2(cachedPlatforms = [], results = []) {
+      const byId = /* @__PURE__ */ new Map();
+      for (const platform of cachedPlatforms) {
+        const normalized = normalizeWechatsyncPlatform2(platform);
+        if (normalized)
+          byId.set(normalized.id, normalized);
+      }
+      for (const result of normalizeWechatSyncResponseResults2(results)) {
+        const platformId = getWechatSyncResultPlatformId2(result);
+        if (!platformId || platformId === "weixin")
+          continue;
+        const previous = byId.get(platformId) || normalizeWechatsyncPlatform2(result) || {
+          id: platformId,
+          name: platformId,
+          authenticated: false
+        };
+        const errorMessage = getWechatSyncResultError2(result);
+        if ((result == null ? void 0 : result.success) === true) {
+          byId.set(platformId, {
+            ...previous,
+            authenticated: true,
+            error: ""
+          });
+          continue;
+        }
+        if (isWechatSyncAuthFailureMessage(errorMessage)) {
+          byId.set(platformId, {
+            ...previous,
+            authenticated: false,
+            error: errorMessage
+          });
+        }
+      }
+      return Array.from(byId.values());
+    }
+    module2.exports = {
+      FEATURED_WECHATSYNC_PLATFORM_ORDER,
+      buildWechatsyncPlatformCatalog: buildWechatsyncPlatformCatalog2,
+      getFallbackWechatsyncPlatforms: getFallbackWechatsyncPlatforms2,
+      getMultiPlatformResultSummary: getMultiPlatformResultSummary2,
+      getWechatSyncResultError: getWechatSyncResultError2,
+      getWechatSyncResultPlatformId: getWechatSyncResultPlatformId2,
+      getWechatSyncResultUrl: getWechatSyncResultUrl2,
+      getWechatsyncPlatformStatus,
+      getWechatsyncPlatformStatusBadge: getWechatsyncPlatformStatusBadge2,
+      isWechatSyncAuthFailureMessage,
+      isWechatSyncConnectionFailure: isWechatSyncConnectionFailure2,
+      normalizeWechatSyncResponseResults: normalizeWechatSyncResponseResults2,
+      normalizeWechatsyncAuthSnapshot: normalizeWechatsyncAuthSnapshot2,
+      normalizeWechatsyncCheckAuthResult,
+      normalizeWechatsyncCapabilities,
+      normalizeWechatsyncPlatformList: normalizeWechatsyncPlatformList2,
+      normalizeWechatsyncPlatform: normalizeWechatsyncPlatform2,
+      probeWechatsyncPlatformsIndividually: probeWechatsyncPlatformsIndividually2,
+      sortWechatsyncPlatformItemsForDisplay: sortWechatsyncPlatformItemsForDisplay2,
+      sortWechatsyncPlatformsForDisplay,
+      summarizeWechatsyncPlatformResponse: summarizeWechatsyncPlatformResponse2,
+      updateCachedPlatformsAfterSync: updateCachedPlatformsAfterSync2
+    };
+  }
+});
+
 // services/sync-context.js
 var require_sync_context = __commonJS({
   "services/sync-context.js"(exports2, module2) {
@@ -11262,6 +12966,1967 @@ var require_obsidian_fetch_adapter = __commonJS({
   }
 });
 
+// services/markdown-utils.js
+var require_markdown_utils = __commonJS({
+  "services/markdown-utils.js"(exports2, module2) {
+    function stripMarkdownFrontmatter2(markdown = "") {
+      return String(markdown || "").replace(
+        /^(?:\uFEFF)?---[ \t]*\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/,
+        ""
+      );
+    }
+    module2.exports = {
+      stripMarkdownFrontmatter: stripMarkdownFrontmatter2
+    };
+  }
+});
+
+// services/article-image-assets.js
+var require_article_image_assets = __commonJS({
+  "services/article-image-assets.js"(exports2, module2) {
+    var path = require("path");
+    var DEFAULT_MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
+    var DEFAULT_MAX_TOTAL_IMAGE_SIZE_BYTES = 50 * 1024 * 1024;
+    var SUPPORTED_IMAGE_MIME_BY_EXT = {
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      webp: "image/webp",
+      gif: "image/gif"
+    };
+    var RECOGNIZED_UNSUPPORTED_IMAGE_MIME_BY_EXT = {
+      svg: "image/svg+xml",
+      heic: "image/heic",
+      heif: "image/heif",
+      avif: "image/avif"
+    };
+    function normalizePath(value) {
+      return String(value || "").trim().replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/{2,}/g, "/");
+    }
+    function getExtension(filename) {
+      const ext = String(filename || "").split("?")[0].split("#")[0].split(".").pop();
+      return ext && ext !== filename ? ext.toLowerCase() : "";
+    }
+    function isRemoteImageSrc(src) {
+      return /^https?:\/\//i.test(String(src || "").trim());
+    }
+    function isDataImageSrc(src) {
+      return /^data:image\//i.test(String(src || "").trim());
+    }
+    function isAssetImageSrc(src) {
+      return /^asset:\/\//i.test(String(src || "").trim());
+    }
+    function isFileUrl(src) {
+      return /^file:\/\//i.test(String(src || "").trim());
+    }
+    function getFilenameFromPath(src) {
+      const value = String(src || "").split("?")[0].split("#")[0].replace(/\\/g, "/");
+      const filename = value.split("/").filter(Boolean).pop();
+      return filename || "image";
+    }
+    function stripMarkdownDestination(rawDestination) {
+      const raw = String(rawDestination || "").trim();
+      if (raw.startsWith("<")) {
+        const end = raw.indexOf(">");
+        if (end > 0)
+          return raw.slice(1, end).trim();
+      }
+      return raw.replace(/\\([()])/g, "$1").trim();
+    }
+    function splitWikiEmbedTarget(rawTarget) {
+      const parts = String(rawTarget || "").split("|");
+      const src = (parts.shift() || "").trim();
+      const alias = parts.join("|").trim();
+      return { src, alias };
+    }
+    function createAltFromSrc(src, fallback = "\u56FE\u7247") {
+      const filename = getFilenameFromPath(src);
+      return filename.replace(/\.(png|jpe?g|gif|webp|svg|heic|heif|avif)$/i, "") || fallback;
+    }
+    function collectWikiImageEmbeds(markdown) {
+      const results = [];
+      const pattern = /!\[\[([^\]\n]+?)\]\]/g;
+      let match;
+      while ((match = pattern.exec(markdown)) !== null) {
+        const { src, alias } = splitWikiEmbedTarget(match[1]);
+        if (!src)
+          continue;
+        results.push({
+          type: "wiki",
+          start: match.index,
+          end: match.index + match[0].length,
+          raw: match[0],
+          src,
+          alt: alias || createAltFromSrc(src)
+        });
+      }
+      return results;
+    }
+    function isImageWikiTarget(src) {
+      const ext = getExtension(String(src || "").split("#")[0]);
+      return !!(SUPPORTED_IMAGE_MIME_BY_EXT[ext] || RECOGNIZED_UNSUPPORTED_IMAGE_MIME_BY_EXT[ext]);
+    }
+    function collectPlainWikiImageLinks(markdown) {
+      const results = [];
+      const pattern = /\[\[([^\]\n]+?)\]\]/g;
+      let match;
+      while ((match = pattern.exec(markdown)) !== null) {
+        if (markdown[match.index - 1] === "!")
+          continue;
+        const { src, alias } = splitWikiEmbedTarget(match[1]);
+        if (!src || !isImageWikiTarget(src))
+          continue;
+        results.push({
+          type: "wiki-link",
+          start: match.index,
+          end: match.index + match[0].length,
+          raw: match[0],
+          src,
+          alt: alias || createAltFromSrc(src)
+        });
+      }
+      return results;
+    }
+    function collectMarkdownImages(markdown) {
+      const results = [];
+      let index = 0;
+      while (index < markdown.length) {
+        const start = markdown.indexOf("![", index);
+        if (start < 0)
+          break;
+        let cursor = start + 2;
+        let escaped = false;
+        let altEnd = -1;
+        while (cursor < markdown.length) {
+          const char = markdown[cursor];
+          if (escaped) {
+            escaped = false;
+          } else if (char === "\\") {
+            escaped = true;
+          } else if (char === "]") {
+            altEnd = cursor;
+            break;
+          }
+          cursor += 1;
+        }
+        if (altEnd < 0 || markdown[altEnd + 1] !== "(") {
+          index = start + 2;
+          continue;
+        }
+        const destinationStart = altEnd + 2;
+        cursor = destinationStart;
+        let depth = 0;
+        escaped = false;
+        let destinationEnd = -1;
+        while (cursor < markdown.length) {
+          const char = markdown[cursor];
+          if (escaped) {
+            escaped = false;
+          } else if (char === "\\") {
+            escaped = true;
+          } else if (char === "(") {
+            depth += 1;
+          } else if (char === ")") {
+            if (depth === 0) {
+              destinationEnd = cursor;
+              break;
+            }
+            depth -= 1;
+          }
+          cursor += 1;
+        }
+        if (destinationEnd < 0) {
+          index = start + 2;
+          continue;
+        }
+        const alt = markdown.slice(start + 2, altEnd);
+        const destination = stripMarkdownDestination(markdown.slice(destinationStart, destinationEnd));
+        if (destination) {
+          results.push({
+            type: "markdown",
+            start,
+            end: destinationEnd + 1,
+            raw: markdown.slice(start, destinationEnd + 1),
+            src: destination,
+            alt
+          });
+        }
+        index = destinationEnd + 1;
+      }
+      return results;
+    }
+    function collectFencedCodeRanges(markdown) {
+      const ranges = [];
+      const fencePattern = /^( {0,3})(`{3,}|~{3,})[^\n]*(?:\n|$)/gm;
+      let match;
+      let open = null;
+      while ((match = fencePattern.exec(markdown)) !== null) {
+        const marker = match[2][0];
+        const length = match[2].length;
+        if (!open) {
+          open = { start: match.index, marker, length };
+          continue;
+        }
+        if (open.marker === marker && length >= open.length) {
+          ranges.push({ start: open.start, end: match.index + match[0].length });
+          open = null;
+        }
+      }
+      if (open)
+        ranges.push({ start: open.start, end: markdown.length });
+      return ranges;
+    }
+    function collectInlineCodeRanges(markdown, blockedRanges = []) {
+      const ranges = [];
+      let index = 0;
+      while (index < markdown.length) {
+        const blocked = blockedRanges.find((range) => index >= range.start && index < range.end);
+        if (blocked) {
+          index = blocked.end;
+          continue;
+        }
+        if (markdown[index] !== "`") {
+          index += 1;
+          continue;
+        }
+        let runEnd = index + 1;
+        while (runEnd < markdown.length && markdown[runEnd] === "`")
+          runEnd += 1;
+        const tickRun = markdown.slice(index, runEnd);
+        const closing = markdown.indexOf(tickRun, runEnd);
+        if (closing < 0) {
+          index = runEnd;
+          continue;
+        }
+        ranges.push({ start: index, end: closing + tickRun.length });
+        index = closing + tickRun.length;
+      }
+      return ranges;
+    }
+    function isInsideRanges(index, ranges) {
+      return ranges.some((range) => index >= range.start && index < range.end);
+    }
+    function collectArticleImageReferences(markdown) {
+      const fencedCodeRanges = collectFencedCodeRanges(markdown);
+      const codeRanges = [
+        ...fencedCodeRanges,
+        ...collectInlineCodeRanges(markdown, fencedCodeRanges)
+      ];
+      return [
+        ...collectWikiImageEmbeds(markdown),
+        ...collectPlainWikiImageLinks(markdown),
+        ...collectMarkdownImages(markdown)
+      ].filter((ref) => !isInsideRanges(ref.start, codeRanges)).sort((a, b) => a.start - b.start);
+    }
+    function bufferFromBinary(binary) {
+      if (Buffer.isBuffer(binary))
+        return binary;
+      if (binary instanceof ArrayBuffer)
+        return Buffer.from(binary);
+      if (ArrayBuffer.isView(binary)) {
+        return Buffer.from(binary.buffer, binary.byteOffset, binary.byteLength);
+      }
+      return Buffer.from(binary || []);
+    }
+    function inferMimeType(filename, buffer) {
+      const ext = getExtension(filename);
+      if (SUPPORTED_IMAGE_MIME_BY_EXT[ext])
+        return SUPPORTED_IMAGE_MIME_BY_EXT[ext];
+      if (RECOGNIZED_UNSUPPORTED_IMAGE_MIME_BY_EXT[ext]) {
+        return RECOGNIZED_UNSUPPORTED_IMAGE_MIME_BY_EXT[ext];
+      }
+      if ((buffer == null ? void 0 : buffer.length) >= 12) {
+        if (buffer[0] === 137 && buffer.slice(1, 4).toString("ascii") === "PNG")
+          return "image/png";
+        if (buffer[0] === 255 && buffer[1] === 216)
+          return "image/jpeg";
+        if (buffer.slice(0, 4).toString("ascii") === "GIF8")
+          return "image/gif";
+        if (buffer.slice(0, 4).toString("ascii") === "RIFF" && buffer.slice(8, 12).toString("ascii") === "WEBP")
+          return "image/webp";
+      }
+      return ext ? `image/${ext}` : "application/octet-stream";
+    }
+    function createWarning(code, message, details = {}) {
+      return {
+        code,
+        message,
+        severity: details.severity || "error",
+        src: details.src || "",
+        filename: details.filename || "",
+        size: details.size || 0
+      };
+    }
+    function isSupportedImageFile(filename) {
+      return !!SUPPORTED_IMAGE_MIME_BY_EXT[getExtension(filename)];
+    }
+    function isRecognizedUnsupportedImageFile(filename) {
+      return !!RECOGNIZED_UNSUPPORTED_IMAGE_MIME_BY_EXT[getExtension(filename)];
+    }
+    function getNoteSourcePath(noteFile) {
+      return typeof (noteFile == null ? void 0 : noteFile.path) === "string" ? noteFile.path : "";
+    }
+    function resolveVaultFile(app, src, noteFile) {
+      var _a, _b;
+      if (!app || !src)
+        return null;
+      const decoded = (() => {
+        try {
+          return decodeURI(src);
+        } catch (e) {
+          return src;
+        }
+      })();
+      const sourcePath = getNoteSourcePath(noteFile);
+      const metadataCache = app.metadataCache;
+      const vault = app.vault;
+      try {
+        const linked = (_a = metadataCache == null ? void 0 : metadataCache.getFirstLinkpathDest) == null ? void 0 : _a.call(metadataCache, decoded, sourcePath);
+        if (linked == null ? void 0 : linked.extension)
+          return linked;
+      } catch (e) {
+      }
+      const candidates = [];
+      const normalized = normalizePath(decoded);
+      if (normalized)
+        candidates.push(normalized);
+      if (sourcePath && normalized && !normalized.startsWith("/")) {
+        const noteDir = path.posix.dirname(normalizePath(sourcePath));
+        candidates.push(normalizePath(path.posix.join(noteDir === "." ? "" : noteDir, normalized)));
+      }
+      for (const candidate of candidates) {
+        try {
+          const file = (_b = vault == null ? void 0 : vault.getAbstractFileByPath) == null ? void 0 : _b.call(vault, candidate);
+          if (file == null ? void 0 : file.extension)
+            return file;
+        } catch (e) {
+        }
+      }
+      return null;
+    }
+    async function readFileUrlAsset(src) {
+      const fs = require("fs/promises");
+      const { fileURLToPath } = require("url");
+      const filePath = fileURLToPath(src);
+      const buffer = await fs.readFile(filePath);
+      return {
+        buffer,
+        filename: getFilenameFromPath(filePath),
+        vaultRelativePath: "",
+        resourceSrc: ""
+      };
+    }
+    async function readVaultAsset(app, file) {
+      var _a, _b;
+      const binary = await app.vault.readBinary(file);
+      const buffer = bufferFromBinary(binary);
+      let resourceSrc = "";
+      try {
+        resourceSrc = ((_b = (_a = app.vault).getResourcePath) == null ? void 0 : _b.call(_a, file)) || "";
+      } catch (e) {
+        resourceSrc = "";
+      }
+      return {
+        buffer,
+        filename: file.name || getFilenameFromPath(file.path),
+        vaultRelativePath: file.path || "",
+        resourceSrc
+      };
+    }
+    function makeAssetId(index) {
+      return `image-${index}`;
+    }
+    function createMarkdownImage(alt, src) {
+      const safeAlt = String(alt || createAltFromSrc(src)).replace(/\]/g, "\\]");
+      return `![${safeAlt}](${src})`;
+    }
+    function replaceRanges(markdown, replacements) {
+      return replacements.slice().sort((a, b) => b.start - a.start).reduce((output, item) => output.slice(0, item.start) + item.value + output.slice(item.end), markdown);
+    }
+    function isLocalLikeSrc(src) {
+      if (!src)
+        return false;
+      if (isRemoteImageSrc(src) || isDataImageSrc(src) || isAssetImageSrc(src))
+        return false;
+      return true;
+    }
+    async function resolveLocalImageAsset({
+      app,
+      src,
+      noteFile,
+      assetIndex,
+      originalSrc = src,
+      existingByKey,
+      limits
+    }) {
+      let file = null;
+      let readResult = null;
+      let cacheKey = "";
+      if (isFileUrl(src)) {
+        cacheKey = `file:${src}`;
+      } else {
+        file = resolveVaultFile(app, src, noteFile);
+        if (!file) {
+          return {
+            warning: createWarning("image_local_missing", "\u672C\u5730\u56FE\u7247\u672A\u627E\u5230", { src: originalSrc })
+          };
+        }
+        cacheKey = `vault:${file.path || src}`;
+      }
+      if (existingByKey.has(cacheKey)) {
+        return { asset: existingByKey.get(cacheKey), reused: true };
+      }
+      try {
+        readResult = file ? await readVaultAsset(app, file) : await readFileUrlAsset(src);
+      } catch (error) {
+        return {
+          warning: createWarning("image_local_read_failed", `\u8BFB\u53D6\u672C\u5730\u56FE\u7247\u5931\u8D25\uFF1A${error.message || String(error)}`, {
+            src: originalSrc,
+            filename: (file == null ? void 0 : file.name) || getFilenameFromPath(src)
+          })
+        };
+      }
+      const { buffer, filename, vaultRelativePath, resourceSrc } = readResult;
+      const mimeType = inferMimeType(filename, buffer);
+      const size = buffer.length;
+      if (!isSupportedImageFile(filename)) {
+        const code = isRecognizedUnsupportedImageFile(filename) ? "image_invalid_mime" : "image_invalid_mime";
+        return {
+          warning: createWarning(code, `\u6682\u4E0D\u652F\u6301\u8BE5\u56FE\u7247\u683C\u5F0F\uFF1A${filename}`, {
+            src: originalSrc,
+            filename,
+            size
+          })
+        };
+      }
+      if (size > limits.maxImageSizeBytes) {
+        return {
+          warning: createWarning("image_too_large", `\u56FE\u7247\u8D85\u8FC7 ${Math.round(limits.maxImageSizeBytes / 1024 / 1024)} MB\uFF1A${filename}`, {
+            src: originalSrc,
+            filename,
+            size
+          })
+        };
+      }
+      const asset = {
+        id: makeAssetId(assetIndex),
+        filename,
+        mimeType,
+        size,
+        base64: buffer.toString("base64"),
+        source: {
+          kind: "obsidian-local",
+          originalSrc,
+          notePath: getNoteSourcePath(noteFile),
+          vaultRelativePath
+        }
+      };
+      if (resourceSrc)
+        asset.source.resourceSrc = resourceSrc;
+      existingByKey.set(cacheKey, asset);
+      return { asset };
+    }
+    function getFirstMarkdownImageSrc(markdown) {
+      const first = collectArticleImageReferences(markdown)[0];
+      return (first == null ? void 0 : first.src) || "";
+    }
+    function replaceArticleContentImageSources(html, assets = []) {
+      var _a, _b, _c;
+      let output = String(html || "");
+      for (const asset of assets) {
+        const assetSrc = `asset://${asset.id}`;
+        const candidates = [
+          (_a = asset == null ? void 0 : asset.source) == null ? void 0 : _a.resourceSrc,
+          (_b = asset == null ? void 0 : asset.source) == null ? void 0 : _b.originalSrc,
+          (_c = asset == null ? void 0 : asset.source) == null ? void 0 : _c.vaultRelativePath
+        ].filter(Boolean);
+        for (const candidate of candidates) {
+          output = output.replace(
+            new RegExp(`(<img\\b[^>]*\\bsrc=["'])${escapeRegExp(candidate)}(["'][^>]*>)`, "gi"),
+            `$1${assetSrc}$2`
+          );
+        }
+      }
+      return output;
+    }
+    function stripUrlQueryHash(value) {
+      const raw = String(value || "");
+      if (!raw)
+        return "";
+      try {
+        const url = new URL(raw);
+        url.search = "";
+        url.hash = "";
+        return url.toString();
+      } catch (e) {
+        return raw.split("?")[0].split("#")[0];
+      }
+    }
+    function getRenderedSrcVaultPath(renderedSrc) {
+      try {
+        const url = new URL(String(renderedSrc || ""));
+        return decodeURIComponent(url.pathname.replace(/^\/+/, ""));
+      } catch (e) {
+        return "";
+      }
+    }
+    function findAssetForRenderedSrc(renderedSrc, assets = []) {
+      var _a, _b, _c;
+      const src = String(renderedSrc || "");
+      if (!src || !Array.isArray(assets) || !assets.length)
+        return null;
+      const renderedKey = stripUrlQueryHash(src);
+      for (const asset of assets) {
+        const resourceSrc = ((_a = asset == null ? void 0 : asset.source) == null ? void 0 : _a.resourceSrc) || "";
+        if (!resourceSrc)
+          continue;
+        if (stripUrlQueryHash(resourceSrc) === renderedKey)
+          return asset;
+      }
+      const pathInRenderedSrc = getRenderedSrcVaultPath(src);
+      if (!pathInRenderedSrc)
+        return null;
+      for (const asset of assets) {
+        const candidates = [
+          (_b = asset == null ? void 0 : asset.source) == null ? void 0 : _b.vaultRelativePath,
+          (_c = asset == null ? void 0 : asset.source) == null ? void 0 : _c.originalSrc
+        ].filter(Boolean);
+        for (const candidate of candidates) {
+          if (pathInRenderedSrc === candidate)
+            return asset;
+          if (pathInRenderedSrc.endsWith(`/${candidate}`))
+            return asset;
+        }
+      }
+      return null;
+    }
+    function findAssetForCover(coverString, assets = []) {
+      const cover = String(coverString || "").trim();
+      if (!cover.startsWith("asset://"))
+        return null;
+      if (!Array.isArray(assets) || !assets.length)
+        return null;
+      const id = cover.slice("asset://".length);
+      if (!id)
+        return null;
+      for (const asset of assets) {
+        if (asset && asset.id === id)
+          return asset;
+      }
+      return null;
+    }
+    function mapAppUrlImagesToAssetUrls2(html, assets = []) {
+      if (!html)
+        return "";
+      return String(html).replace(
+        /(<img\b[^>]*\bsrc=["'])([^"']+)(["'][^>]*>)/gi,
+        (match, prefix, src, suffix) => {
+          if (!/^(app|capacitor):\/\//i.test(src))
+            return match;
+          const asset = findAssetForRenderedSrc(src, assets);
+          if (!asset)
+            return match;
+          return `${prefix}asset://${asset.id}${suffix}`;
+        }
+      );
+    }
+    function escapeRegExp(value) {
+      return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+    function formatArticleImageWarnings(warnings = []) {
+      const items = warnings.filter((warning) => (warning == null ? void 0 : warning.severity) !== "info");
+      if (!items.length)
+        return "";
+      const preview = items.slice(0, 3).map((warning) => {
+        const target = warning.filename || warning.src || "\u56FE\u7247";
+        return `${warning.message || "\u56FE\u7247\u5904\u7406\u5931\u8D25"}\uFF08${target}\uFF09`;
+      }).join("\uFF1B");
+      const suffix = items.length > 3 ? `\uFF0C\u53E6\u6709 ${items.length - 3} \u9879` : "";
+      return `${preview}${suffix}`;
+    }
+    async function resolveArticleImages(markdown, noteFile, options = {}) {
+      const app = options.app;
+      const limits = {
+        maxImageSizeBytes: options.maxImageSizeBytes || DEFAULT_MAX_IMAGE_SIZE_BYTES,
+        maxTotalImageSizeBytes: options.maxTotalImageSizeBytes || DEFAULT_MAX_TOTAL_IMAGE_SIZE_BYTES
+      };
+      const sourceMarkdown = String(markdown || "");
+      const references = collectArticleImageReferences(sourceMarkdown);
+      const warnings = [];
+      const replacements = [];
+      const assets = [];
+      const existingByKey = /* @__PURE__ */ new Map();
+      const resolveSrc = async (src, originalSrc = src) => {
+        const trimmed = String(src || "").trim();
+        if (!trimmed)
+          return { src: trimmed };
+        if (!isLocalLikeSrc(trimmed))
+          return { src: trimmed };
+        if (!isFileUrl(trimmed) && /^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+          return {
+            src: trimmed,
+            warning: createWarning("image_unsupported_protocol", "\u4E0D\u652F\u6301\u7684\u56FE\u7247\u5730\u5740", { src: originalSrc })
+          };
+        }
+        const result = await resolveLocalImageAsset({
+          app,
+          src: trimmed,
+          noteFile,
+          assetIndex: assets.length + 1,
+          originalSrc,
+          existingByKey,
+          limits
+        });
+        if (result.warning)
+          return { src: trimmed, warning: result.warning };
+        if (result.asset && !result.reused)
+          assets.push(result.asset);
+        return { src: `asset://${result.asset.id}`, asset: result.asset };
+      };
+      for (const ref of references) {
+        const result = await resolveSrc(ref.src, ref.src);
+        if (result.warning) {
+          warnings.push(result.warning);
+          continue;
+        }
+        if (result.src !== ref.src) {
+          replacements.push({
+            start: ref.start,
+            end: ref.end,
+            value: createMarkdownImage(ref.alt, result.src)
+          });
+        }
+      }
+      let cover = options.cover || "";
+      if (cover && isLocalLikeSrc(cover)) {
+        const coverResult = await resolveSrc(cover, cover);
+        if (coverResult.warning) {
+          warnings.push(coverResult.warning);
+        } else {
+          cover = coverResult.src;
+        }
+      }
+      const totalSize = assets.reduce((sum, asset) => sum + (asset.size || 0), 0);
+      if (totalSize > limits.maxTotalImageSizeBytes) {
+        warnings.push(createWarning("image_too_large", `\u6587\u7AE0\u56FE\u7247\u603B\u91CF\u8D85\u8FC7 ${Math.round(limits.maxTotalImageSizeBytes / 1024 / 1024)} MB`, {
+          size: totalSize
+        }));
+      }
+      const resolvedMarkdown = replaceRanges(sourceMarkdown, replacements);
+      return {
+        markdown: resolvedMarkdown,
+        assets,
+        warnings,
+        cover,
+        firstImageSrc: getFirstMarkdownImageSrc(resolvedMarkdown)
+      };
+    }
+    module2.exports = {
+      DEFAULT_MAX_IMAGE_SIZE_BYTES,
+      DEFAULT_MAX_TOTAL_IMAGE_SIZE_BYTES,
+      collectArticleImageReferences,
+      findAssetForCover,
+      findAssetForRenderedSrc,
+      formatArticleImageWarnings,
+      getFirstMarkdownImageSrc,
+      mapAppUrlImagesToAssetUrls: mapAppUrlImagesToAssetUrls2,
+      replaceArticleContentImageSources,
+      resolveArticleImages
+    };
+  }
+});
+
+// services/wechatsync-settings.js
+var require_wechatsync_settings = __commonJS({
+  "services/wechatsync-settings.js"(exports2, module2) {
+    var { DEFAULT_WECHATSYNC_PORT: DEFAULT_WECHATSYNC_PORT2 } = require_wechatsync_bridge();
+    var {
+      buildWechatsyncPlatformCatalog: buildWechatsyncPlatformCatalog2,
+      getFallbackWechatsyncPlatforms: getFallbackWechatsyncPlatforms2,
+      normalizeWechatsyncPlatform: normalizeWechatsyncPlatform2
+    } = require_wechatsync_results();
+    function createDefaultMultiPlatformSyncSettings2() {
+      return {
+        enabled: false,
+        port: DEFAULT_WECHATSYNC_PORT2,
+        token: "",
+        allowRemote: false,
+        supportedPlatforms: [],
+        connectedClients: [],
+        selectedPlatforms: [],
+        recentTasks: [],
+        connection: {
+          status: "untested",
+          checkedAt: 0,
+          platforms: [],
+          message: ""
+        }
+      };
+    }
+    function normalizeConnectedClient(value) {
+      if (!value || typeof value !== "object")
+        return null;
+      const id = String(value.extensionInstanceId || "").trim();
+      if (!id)
+        return null;
+      const status = value.status === "connected" ? "connected" : "disconnected";
+      const now = Date.now();
+      return {
+        extensionInstanceId: id,
+        browserName: typeof value.browserName === "string" ? value.browserName : "",
+        profileLabel: typeof value.profileLabel === "string" ? value.profileLabel : "",
+        capabilities: value.capabilities && typeof value.capabilities === "object" ? { ...value.capabilities } : {},
+        extensionVersion: typeof value.extensionVersion === "string" ? value.extensionVersion : "",
+        status,
+        lastSeenAt: Number.isFinite(Number(value.lastSeenAt)) ? Number(value.lastSeenAt) : now,
+        firstConnectedAt: Number.isFinite(Number(value.firstConnectedAt)) ? Number(value.firstConnectedAt) : now,
+        lastConnectedAt: Number.isFinite(Number(value.lastConnectedAt)) ? Number(value.lastConnectedAt) : now
+      };
+    }
+    function normalizeConnectedClients(value) {
+      if (!Array.isArray(value))
+        return [];
+      return value.map((entry) => normalizeConnectedClient(entry)).filter(Boolean);
+    }
+    function normalizeWechatsyncPlatformId2(value = "") {
+      const id = String(value || "").trim().toLowerCase();
+      if (id === "twitter")
+        return "x";
+      return id && id !== "weixin" ? id : "";
+    }
+    function parseWechatsyncPlatformIds2(value = []) {
+      const rawIds = Array.isArray(value) ? value : String(value || "").split(/[\s,，;；]+/);
+      const seen = /* @__PURE__ */ new Set();
+      return rawIds.map((id) => normalizeWechatsyncPlatformId2(id)).filter((id) => {
+        if (!id || seen.has(id))
+          return false;
+        seen.add(id);
+        return true;
+      });
+    }
+    function mergeWechatsyncPlatformLists2(...lists) {
+      const byId = /* @__PURE__ */ new Map();
+      for (const list of lists) {
+        for (const platform of Array.isArray(list) ? list : []) {
+          const normalized = normalizeWechatsyncPlatform2(platform);
+          if (!normalized)
+            continue;
+          byId.set(normalized.id, {
+            ...byId.get(normalized.id) || {},
+            ...normalized
+          });
+        }
+      }
+      return Array.from(byId.values());
+    }
+    function normalizeWechatSyncCapabilities2(value = {}) {
+      const source = value && typeof value === "object" ? value : {};
+      const knownKeys = [
+        "enqueueSyncArticle",
+        "listSupportedPlatforms",
+        "checkAuth",
+        "getSyncTask",
+        "getSyncTaskLink",
+        "openSyncTask",
+        "getAuthSnapshot",
+        "quotaPolicy"
+      ];
+      return knownKeys.reduce((result, key) => {
+        if (Object.prototype.hasOwnProperty.call(source, key))
+          result[key] = source[key] === true;
+        return result;
+      }, {});
+    }
+    function hasWechatSyncCapability2(settings = {}, capability = "") {
+      const capabilities = normalizeMultiPlatformSyncSettings2(settings).connection.capabilities || {};
+      return capabilities[capability] === true;
+    }
+    function normalizeWechatSyncRecentTasks2(value = []) {
+      const tasks = Array.isArray(value) ? value : [];
+      const seen = /* @__PURE__ */ new Set();
+      return tasks.map((task) => {
+        const syncId = String((task == null ? void 0 : task.syncId) || "").trim();
+        if (!syncId || seen.has(syncId))
+          return null;
+        seen.add(syncId);
+        return {
+          syncId,
+          title: String((task == null ? void 0 : task.title) || "\u65E0\u6807\u9898\u6587\u7AE0"),
+          platforms: parseWechatsyncPlatformIds2((task == null ? void 0 : task.platforms) || []),
+          createdAt: Number.isFinite(Number(task == null ? void 0 : task.createdAt)) ? Number(task.createdAt) : Date.now()
+        };
+      }).filter(Boolean).slice(0, 10);
+    }
+    function normalizeMultiPlatformConnection2(value = {}) {
+      const source = value && typeof value === "object" ? value : {};
+      const status = ["connected", "failed", "untested"].includes(source.status) ? source.status : "untested";
+      return {
+        status,
+        checkedAt: Number.isFinite(Number(source.checkedAt)) ? Number(source.checkedAt) : 0,
+        platforms: Array.isArray(source.platforms) ? source.platforms.map((platform) => normalizeWechatsyncPlatform2(platform)).filter(Boolean) : [],
+        message: typeof source.message === "string" ? source.message : "",
+        capabilities: normalizeWechatSyncCapabilities2(source.capabilities)
+      };
+    }
+    function normalizeMultiPlatformSyncSettings2(value = {}) {
+      const defaults = createDefaultMultiPlatformSyncSettings2();
+      const source = value && typeof value === "object" ? value : {};
+      const portNumber = Number(source.port);
+      const fallbackPlatformIds = new Set(getFallbackWechatsyncPlatforms2().map((platform) => platform.id));
+      const supportedPlatforms = mergeWechatsyncPlatformLists2(source.supportedPlatforms);
+      const supportedPlatformIds = new Set(supportedPlatforms.map((platform) => platform.id));
+      const selectablePlatformIds = /* @__PURE__ */ new Set([...fallbackPlatformIds, ...supportedPlatformIds]);
+      const selectedPlatforms = parseWechatsyncPlatformIds2(source.selectedPlatforms).filter((id) => selectablePlatformIds.has(id));
+      return {
+        enabled: !!source.enabled,
+        port: Number.isInteger(portNumber) && portNumber > 0 && portNumber < 65536 ? portNumber : defaults.port,
+        token: typeof source.token === "string" ? source.token.trim() : "",
+        allowRemote: source.allowRemote === true,
+        supportedPlatforms,
+        selectedPlatforms,
+        connection: normalizeMultiPlatformConnection2(source.connection),
+        recentTasks: normalizeWechatSyncRecentTasks2(source.recentTasks),
+        connectedClients: normalizeConnectedClients(source.connectedClients)
+      };
+    }
+    function getConfiguredWechatsyncPlatforms2(settings = {}, cachedPlatforms = []) {
+      const normalizedSettings = normalizeMultiPlatformSyncSettings2(settings);
+      const availableById = new Map(
+        mergeWechatsyncPlatformLists2(getFallbackWechatsyncPlatforms2(), normalizedSettings.supportedPlatforms).map((platform) => [platform.id, platform])
+      );
+      const cachedById = new Map(
+        (cachedPlatforms || []).map((platform) => normalizeWechatsyncPlatform2(platform)).filter(Boolean).map((platform) => [platform.id, platform])
+      );
+      return (normalizedSettings.selectedPlatforms || []).map((id) => {
+        const fallback = availableById.get(id) || { id, name: id, custom: true };
+        const cached = cachedById.get(id);
+        return cached ? { ...fallback, ...cached, authKnown: true } : { ...fallback, authKnown: false, authenticated: false, username: "", error: "" };
+      }).filter((platform) => platform.id !== "weixin");
+    }
+    function getAvailableWechatsyncPlatforms2(settings = {}) {
+      var _a, _b;
+      const normalizedSettings = normalizeMultiPlatformSyncSettings2(settings);
+      return buildWechatsyncPlatformCatalog2({
+        supportedPlatforms: normalizedSettings.supportedPlatforms,
+        authSnapshotPlatforms: ((_a = normalizedSettings.connection) == null ? void 0 : _a.platforms) || [],
+        bridgeConnected: ((_b = normalizedSettings.connection) == null ? void 0 : _b.status) === "connected"
+      });
+    }
+    module2.exports = {
+      createDefaultMultiPlatformSyncSettings: createDefaultMultiPlatformSyncSettings2,
+      normalizeConnectedClient,
+      normalizeConnectedClients,
+      normalizeWechatsyncPlatformId: normalizeWechatsyncPlatformId2,
+      parseWechatsyncPlatformIds: parseWechatsyncPlatformIds2,
+      mergeWechatsyncPlatformLists: mergeWechatsyncPlatformLists2,
+      normalizeWechatSyncCapabilities: normalizeWechatSyncCapabilities2,
+      hasWechatSyncCapability: hasWechatSyncCapability2,
+      normalizeWechatSyncRecentTasks: normalizeWechatSyncRecentTasks2,
+      normalizeMultiPlatformConnection: normalizeMultiPlatformConnection2,
+      normalizeMultiPlatformSyncSettings: normalizeMultiPlatformSyncSettings2,
+      getConfiguredWechatsyncPlatforms: getConfiguredWechatsyncPlatforms2,
+      getAvailableWechatsyncPlatforms: getAvailableWechatsyncPlatforms2
+    };
+  }
+});
+
+// views/connection-status-bar.js
+var require_connection_status_bar = __commonJS({
+  "views/connection-status-bar.js"(exports2, module2) {
+    function formatWechatsyncCheckedAt2(timestamp) {
+      if (!timestamp)
+        return "";
+      try {
+        return new Date(timestamp).toLocaleString("zh-CN", {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit"
+        });
+      } catch (e) {
+        return "";
+      }
+    }
+    function describeWechatsyncConnectionState2(connection = {}, context = {}) {
+      const { variant = "modal" } = context;
+      const checkedAtText = formatWechatsyncCheckedAt2(connection.checkedAt);
+      if (connection.status === "connected") {
+        if (variant === "settings") {
+          return {
+            dotLabel: "\u5DF2\u8FDE\u63A5",
+            dotClass: "is-ok",
+            text: connection.message || (checkedAtText ? `\u5DF2\u8FDE\u63A5\u6D4F\u89C8\u5668\u63D2\u4EF6\u3002\u4E0A\u6B21\u68C0\u67E5 ${checkedAtText}\u3002` : "\u5DF2\u8FDE\u63A5\u6D4F\u89C8\u5668\u63D2\u4EF6\u3002")
+          };
+        }
+        return {
+          dotLabel: "\u5DF2\u8FDE\u63A5",
+          dotClass: "is-ok",
+          text: checkedAtText ? `\u5DF2\u8FDE\u63A5\u3002\u4F7F\u7528\u8BBE\u7F6E\u4E2D ${checkedAtText} \u7684\u6240\u9009\u5E73\u53F0\u914D\u7F6E\uFF0C\u5FAE\u4FE1\u4E0D\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC\u3002` : "\u5DF2\u8FDE\u63A5\u3002\u52FE\u9009\u672C\u6B21\u8981\u53D1\u9001\u7684\u5E73\u53F0\uFF0C\u5FAE\u4FE1\u4E0D\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC\u3002"
+        };
+      }
+      if (connection.status === "failed") {
+        return {
+          dotLabel: "\u672A\u8FDE\u63A5",
+          dotClass: "is-error",
+          text: variant === "settings" ? `\u4E0A\u6B21\u8FDE\u63A5\u5931\u8D25${connection.message ? `\uFF1A${connection.message}` : ""}\u3002\u8BF7\u68C0\u67E5\u7AEF\u53E3\u3001\u4EE4\u724C\u540E\u70B9\u51FB\u300C\u6D4B\u8BD5\u8FDE\u63A5\u300D\u3002` : `\u4E0A\u6B21\u8FDE\u63A5\u5931\u8D25${connection.message ? `\uFF1A${connection.message}` : ""}\u3002\u8BF7\u5148\u8FDE\u63A5\u6D4F\u89C8\u5668\u63D2\u4EF6\u540E\u518D\u53D1\u5E03\u3002`
+        };
+      }
+      return {
+        dotLabel: "\u672A\u6D4B\u8BD5",
+        dotClass: "",
+        text: variant === "settings" ? "\u5C1A\u672A\u6D4B\u8BD5\u4E0E\u6D4F\u89C8\u5668\u63D2\u4EF6\u7684\u8FDE\u63A5\u3002\u70B9\u51FB\u4E0B\u65B9\u300C\u6D4B\u8BD5\u8FDE\u63A5\u300D\u5F00\u59CB\u8BCA\u65AD\u3002" : "\u5C1A\u672A\u8FDE\u63A5\u6D4F\u89C8\u5668\u63D2\u4EF6\u3002\u5E73\u53F0\u5217\u8868\u5148\u663E\u793A\u672C\u5730\u5907\u7528\u6E05\u5355\uFF0C\u8FDE\u63A5\u540E\u4F1A\u8BFB\u53D6\u63D2\u4EF6\u5B9E\u9645\u652F\u6301\u7684\u5E73\u53F0\u3002"
+      };
+    }
+    function renderWechatsyncConnectionStatusBar2(parentEl, options = {}) {
+      const {
+        dotLabel = "",
+        dotClass = "",
+        text = "",
+        action = null
+      } = options;
+      const bar = parentEl.createDiv({ cls: "wechat-multiplatform-status" });
+      if (dotLabel) {
+        bar.createEl("span", {
+          text: dotLabel,
+          cls: `wechat-multiplatform-status-dot ${dotClass}`.trim()
+        });
+      }
+      if (text) {
+        bar.createEl("span", { text, cls: "wechat-multiplatform-status-text" });
+      }
+      let actionButton = null;
+      if (action && typeof action === "object") {
+        actionButton = bar.createEl("button", {
+          text: action.label || "\u91CD\u8BD5",
+          cls: "wechat-multiplatform-status-action"
+        });
+        if (action.disabled)
+          actionButton.disabled = true;
+        if (typeof action.onClick === "function") {
+          actionButton.addEventListener("click", (event) => {
+            action.onClick(event, actionButton);
+          });
+        }
+      }
+      return { bar, actionButton };
+    }
+    module2.exports = {
+      formatWechatsyncCheckedAt: formatWechatsyncCheckedAt2,
+      describeWechatsyncConnectionState: describeWechatsyncConnectionState2,
+      renderWechatsyncConnectionStatusBar: renderWechatsyncConnectionStatusBar2
+    };
+  }
+});
+
+// views/settings/multi-platform-tab.js
+var require_multi_platform_tab = __commonJS({
+  "views/settings/multi-platform-tab.js"(exports2, module2) {
+    var { Setting: Setting2, Notice: Notice2 } = require("obsidian");
+    var {
+      DEFAULT_WECHATSYNC_PORT: DEFAULT_WECHATSYNC_PORT2,
+      retryRecoverableBridgeOperation: retryRecoverableBridgeOperation2,
+      isUnsupportedBridgeMethodError: isWechatSyncUnsupportedMethodError2
+    } = require_wechatsync_bridge();
+    var {
+      getFallbackWechatsyncPlatforms: getFallbackWechatsyncPlatforms2,
+      getWechatsyncPlatformStatusBadge: getWechatsyncPlatformStatusBadge2,
+      normalizeWechatsyncAuthSnapshot: normalizeWechatsyncAuthSnapshot2,
+      normalizeWechatsyncPlatformList: normalizeWechatsyncPlatformList2,
+      summarizeWechatsyncPlatformResponse: summarizeWechatsyncPlatformResponse2
+    } = require_wechatsync_results();
+    var {
+      getAvailableWechatsyncPlatforms: getAvailableWechatsyncPlatforms2,
+      mergeWechatsyncPlatformLists: mergeWechatsyncPlatformLists2,
+      normalizeMultiPlatformSyncSettings: normalizeMultiPlatformSyncSettings2,
+      normalizeWechatSyncCapabilities: normalizeWechatSyncCapabilities2,
+      parseWechatsyncPlatformIds: parseWechatsyncPlatformIds2
+    } = require_wechatsync_settings();
+    var {
+      describeWechatsyncConnectionState: describeWechatsyncConnectionState2,
+      formatWechatsyncCheckedAt: formatWechatsyncCheckedAt2,
+      renderWechatsyncConnectionStatusBar: renderWechatsyncConnectionStatusBar2
+    } = require_connection_status_bar();
+    var OBSIDIAN_PUBLISHER_PRO_URL2 = "https://xiaoweibox.top/obsidian-publisher/pro/?from=obsidian-plugin";
+    var OBSIDIAN_PUBLISHER_EXTENSION_GUIDE_URL2 = "https://xiaoweibox.top/obsidian-publisher/guide/?from=obsidian-plugin#install-extension";
+    var OBSIDIAN_PUBLISHER_BRIDGE_GUIDE_URL2 = "https://xiaoweibox.top/obsidian-publisher/guide/?from=obsidian-plugin#bridge";
+    function openExternalUrl(url) {
+      var _a;
+      const target = String(url || "").trim();
+      if (!/^https?:\/\//i.test(target))
+        return false;
+      try {
+        const electron = require("electron");
+        if ((_a = electron == null ? void 0 : electron.shell) == null ? void 0 : _a.openExternal) {
+          electron.shell.openExternal(target);
+          return true;
+        }
+      } catch (e) {
+      }
+      if (typeof window !== "undefined" && typeof window.open === "function") {
+        window.open(target, "_blank", "noopener");
+        return true;
+      }
+      return false;
+    }
+    function renderMultiPlatformSettingsTab2(tab, containerEl) {
+      var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o, _p;
+      const { plugin } = tab;
+      const multiPlatformSettings = normalizeMultiPlatformSyncSettings2(plugin.settings.multiPlatformSync);
+      plugin.settings.multiPlatformSync = multiPlatformSettings;
+      new Setting2(containerEl).setName("\u6D4F\u89C8\u5668\u63D2\u4EF6\u53D1\u5E03").setDesc("Obsidian \u8D1F\u8D23\u5199\u4F5C\u3001\u9884\u89C8\u548C\u5E73\u53F0\u9009\u62E9\uFF1B\u6D4F\u89C8\u5668\u63D2\u4EF6\u4F7F\u7528\u5F53\u524D\u7684\u6D4F\u89C8\u5668\u767B\u5F55\u6001\uFF0C\u628A\u6587\u7AE0\u4FDD\u5B58\u5230\u77E5\u4E4E\u3001\u6398\u91D1\u3001CSDN \u7B49\u5E73\u53F0\u8349\u7A3F\u7BB1\u3002\u5FAE\u4FE1\u4ECD\u53EF\u4F7F\u7528\u4E0A\u65B9\u516C\u4F17\u53F7 API\u3002").setHeading();
+      const guide = containerEl.createDiv({ cls: "wechat-multiplatform-onboarding" });
+      guide.createEl("div", {
+        cls: "wechat-multiplatform-onboarding-title",
+        text: "\u4E0B\u4E00\u6B65\uFF1A\u5B89\u88C5\u6D4F\u89C8\u5668\u63D2\u4EF6\u5E76\u5B8C\u6210\u914D\u7F6E"
+      });
+      guide.createEl("p", {
+        text: "\u514D\u8D39\u7248\u6BCF\u5929\u53EF\u53D1\u5E03\u5230 3 \u4E2A\u5E73\u53F0\u3002\u60F3\u5148\u8BD5\u7528\uFF0C\u5148\u5B89\u88C5\u6D4F\u89C8\u5668\u63D2\u4EF6\uFF1B\u5DF2\u7ECF\u8D2D\u4E70\u6216\u5DF2\u7ECF\u88C5\u597D\u6D4F\u89C8\u5668\u63D2\u4EF6\uFF0C\u53EF\u76F4\u63A5\u67E5\u770B\u914D\u7F6E\u6B65\u9AA4\u3002"
+      });
+      const guideActions = guide.createDiv({ cls: "wechat-multiplatform-onboarding-actions" });
+      const installGuideBtn = guideActions.createEl("button", { text: "\u5B89\u88C5\u6D4F\u89C8\u5668\u63D2\u4EF6", cls: "mod-cta" });
+      installGuideBtn.onclick = () => openExternalUrl(OBSIDIAN_PUBLISHER_EXTENSION_GUIDE_URL2);
+      const bridgeGuideBtn = guideActions.createEl("button", { text: "\u67E5\u770B\u914D\u7F6E\u6B65\u9AA4" });
+      bridgeGuideBtn.onclick = () => openExternalUrl(OBSIDIAN_PUBLISHER_BRIDGE_GUIDE_URL2);
+      const proGuideBtn = guideActions.createEl("button", { text: "\u4E86\u89E3 Pro" });
+      proGuideBtn.onclick = () => openExternalUrl(OBSIDIAN_PUBLISHER_PRO_URL2);
+      new Setting2(containerEl).setName("\u542F\u7528\u6D4F\u89C8\u5668\u63D2\u4EF6\u53D1\u5E03").setDesc("\u5F00\u542F\u540E\uFF0CObsidian \u4F1A\u628A\u6587\u7AE0\u53D1\u9001\u7ED9\u6D4F\u89C8\u5668\u63D2\u4EF6\uFF0C\u7531\u63D2\u4EF6\u4F7F\u7528\u6D4F\u89C8\u5668\u767B\u5F55\u6001\u4FDD\u5B58\u5230\u5404\u5E73\u53F0\u8349\u7A3F\u7BB1\u3002\u5728\u4E0B\u65B9\u586B\u5165\u300C\u8FDE\u63A5\u4EE4\u724C\u300D\u5373\u53EF\u5B8C\u6210\u914D\u5BF9\u3002").addToggle((toggle) => toggle.setValue(multiPlatformSettings.enabled).onChange(async (value) => {
+        var _a2;
+        plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings2({
+          ...plugin.settings.multiPlatformSync,
+          enabled: value
+        });
+        await plugin.saveSettings();
+        if (value) {
+          plugin.startWechatSyncBridgeInBackground("settings-enabled");
+        } else if ((_a2 = plugin._wechatSyncBridgeService) == null ? void 0 : _a2.stop) {
+          await plugin._wechatSyncBridgeService.stop().catch((error) => {
+            console.warn("\u505C\u6B62\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u5931\u8D25:", error);
+          });
+        }
+        tab.display();
+      }));
+      if (!multiPlatformSettings.enabled) {
+        return;
+      }
+      new Setting2(containerEl).setName("\u672C\u5730\u670D\u52A1\u7AEF\u53E3").setDesc("\u9ED8\u8BA4 9527\u3002\u53EA\u6709\u5F53\u6D4F\u89C8\u5668\u63D2\u4EF6\u4E2D\u7684\u672C\u5730\u670D\u52A1\u5730\u5740\u4F7F\u7528\u4E86\u5176\u4ED6\u7AEF\u53E3\u65F6\u624D\u9700\u8981\u4FEE\u6539\u3002").addText((text) => text.setPlaceholder(String(DEFAULT_WECHATSYNC_PORT2)).setValue(String(multiPlatformSettings.port)).onChange(async (value) => {
+        const nextPort = Number(value);
+        plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings2({
+          ...plugin.settings.multiPlatformSync,
+          port: Number.isInteger(nextPort) ? nextPort : DEFAULT_WECHATSYNC_PORT2,
+          connection: { status: "untested" }
+        });
+        await plugin.saveSettings();
+        plugin.startWechatSyncBridgeInBackground("settings-port-change");
+      }));
+      new Setting2(containerEl).setName("\u8FDE\u63A5\u4EE4\u724C").setDesc("\u586B\u5165\u6D4F\u89C8\u5668\u63D2\u4EF6\u672C\u5730\u670D\u52A1\u4E2D\u663E\u793A\u7684\u8FDE\u63A5\u4EE4\u724C\uFF0C\u7528\u4E8E\u786E\u8BA4 Obsidian \u4E0E\u63D2\u4EF6\u5C5E\u4E8E\u540C\u4E00\u7EC4\u8FDE\u63A5\u3002").addText((text) => text.setPlaceholder("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx").setValue(multiPlatformSettings.token).onChange(async (value) => {
+        plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings2({
+          ...plugin.settings.multiPlatformSync,
+          token: value,
+          connection: { status: "untested" }
+        });
+        await plugin.saveSettings();
+        plugin.startWechatSyncBridgeInBackground("settings-token-change");
+      }));
+      {
+        let renderBrowserIcon2 = function(parentEl, name) {
+          const key = (name || "").toLowerCase().replace(/\s+/g, "");
+          const browser = LOW_CONFIDENCE_BROWSER_KEYS.has(key) ? null : BROWSER_SVG[key];
+          if (browser) {
+            const svg = parentEl.createSvg("svg", {
+              attr: { viewBox: "0 0 24 24", width: "14", height: "14", fill: browser.color },
+              cls: "wechat-bridge-browser-icon"
+            });
+            svg.createSvg("path", { attr: { d: browser.path } });
+          } else {
+            parentEl.createEl("span", {
+              cls: "wechat-bridge-browser-icon-generic",
+              text: BROWSER_EMOJI_FALLBACK[key] || "\u{1F310}"
+            });
+          }
+        }, renderBrowserLabel2 = function(parentEl, browserName, profileLabel) {
+          const label = (profileLabel || "").trim();
+          if (label) {
+            parentEl.createEl("span", { cls: "wechat-bridge-status-profile", text: label });
+          } else {
+            parentEl.createEl("span", {
+              text: browserName ? browserName.charAt(0).toUpperCase() + browserName.slice(1) : "\u6D4F\u89C8\u5668"
+            });
+          }
+        }, fmtRelativeTime2 = function(ts) {
+          if (!ts)
+            return "";
+          const d = Date.now() - ts;
+          if (d < 6e4)
+            return "\u521A\u521A";
+          if (d < 36e5)
+            return `${Math.floor(d / 6e4)} \u5206\u949F\u524D`;
+          if (d < 864e5)
+            return `${Math.floor(d / 36e5)} \u5C0F\u65F6\u524D`;
+          return `${Math.floor(d / 864e5)} \u5929\u524D`;
+        };
+        var renderBrowserIcon = renderBrowserIcon2, renderBrowserLabel = renderBrowserLabel2, fmtRelativeTime = fmtRelativeTime2;
+        const clients = multiPlatformSettings.connectedClients || [];
+        const liveClient = clients.find((c) => c.status === "connected");
+        const lastClient = clients[clients.length - 1];
+        const BROWSER_SVG = {
+          chrome: { color: "#4285F4", path: "M12 0C8.21 0 4.831 1.757 2.632 4.501l3.953 6.848A5.454 5.454 0 0 1 12 6.545h10.691A12 12 0 0 0 12 0zM1.931 5.47A11.943 11.943 0 0 0 0 12c0 6.012 4.42 10.991 10.189 11.864l3.953-6.847a5.45 5.45 0 0 1-6.865-2.29zm13.342 2.166a5.446 5.446 0 0 1 1.45 7.09l.002.001h-.002l-5.344 9.257c.206.01.413.016.621.016 6.627 0 12-5.373 12-12 0-1.54-.29-3.011-.818-4.364zM12 16.364a4.364 4.364 0 1 1 0-8.728 4.364 4.364 0 0 1 0 8.728Z" },
+          chromium: { color: "#4285F4", path: "M12 0C8.21 0 4.831 1.757 2.632 4.501l3.953 6.848A5.454 5.454 0 0 1 12 6.545h10.691A12 12 0 0 0 12 0zM1.931 5.47A11.943 11.943 0 0 0 0 12c0 6.012 4.42 10.991 10.189 11.864l3.953-6.847a5.45 5.45 0 0 1-6.865-2.29zm13.342 2.166a5.446 5.446 0 0 1 1.45 7.09l.002.001h-.002l-5.344 9.257c.206.01.413.016.621.016 6.627 0 12-5.373 12-12 0-1.54-.29-3.011-.818-4.364zM12 16.364a4.364 4.364 0 1 1 0-8.728 4.364 4.364 0 0 1 0 8.728Z" },
+          firefox: { color: "#FF7139", path: "M20.452 3.445a11.002 11.002 0 00-2.482-1.908C16.944.997 15.098.093 12.477.032c-.734-.017-1.457.03-2.174.144-.72.114-1.398.292-2.118.56-1.017.377-1.996.975-2.574 1.554.583-.349 1.476-.733 2.55-.992a10.083 10.083 0 013.729-.167c2.341.34 4.178 1.381 5.48 2.625a8.066 8.066 0 011.298 1.587c1.468 2.382 1.33 5.376.184 7.142-.85 1.312-2.67 2.544-4.37 2.53-.583-.023-1.438-.152-2.25-.566-2.629-1.343-3.021-4.688-1.118-6.306-.632-.136-1.82.13-2.646 1.363-.742 1.107-.7 2.816-.242 4.028a6.473 6.473 0 01-.59-1.895 7.695 7.695 0 01.416-3.845A8.212 8.212 0 019.45 5.399c.896-1.069 1.908-1.72 2.75-2.005-.54-.471-1.411-.738-2.421-.767C8.31 2.583 6.327 3.061 4.7 4.41a8.148 8.148 0 00-1.976 2.414c-.455.836-.691 1.659-.697 1.678.122-1.445.704-2.994 1.248-4.055-.79.413-1.827 1.668-2.41 3.042C.095 9.37-.2 11.608.14 13.989c.966 5.668 5.9 9.982 11.843 9.982C18.62 23.971 24 18.591 24 11.956a11.93 11.93 0 00-3.548-8.511z" },
+          edge: { color: "#0078D4", path: "M21.86 17.86q.14 0 .25.12.1.13.1.25t-.11.33l-.32.46-.43.53-.44.5q-.21.25-.38.42l-.22.23q-.58.53-1.34 1.04-.76.51-1.6.91-.86.4-1.74.64t-1.67.24q-.9 0-1.69-.28-.8-.28-1.48-.78-.68-.5-1.22-1.17-.53-.66-.92-1.44-.38-.77-.58-1.6-.2-.83-.2-1.67 0-1 .32-1.96.33-.97.87-1.8.14.95.55 1.77.41.82 1.02 1.5.6.68 1.38 1.21.78.54 1.64.9.86.36 1.77.56.92.2 1.8.2 1.12 0 2.18-.24 1.06-.23 2.06-.72l.2-.1.2-.05zm-15.5-1.27q0 1.1.27 2.15.27 1.06.78 2.03.51.96 1.24 1.77.74.82 1.66 1.4-1.47-.2-2.8-.74-1.33-.55-2.48-1.37-1.15-.83-2.08-1.9-.92-1.07-1.58-2.33T.36 14.94Q0 13.54 0 12.06q0-.81.32-1.49.31-.68.83-1.23.53-.55 1.2-.96.66-.4 1.35-.66.74-.27 1.5-.39.78-.12 1.55-.12.7 0 1.42.1.72.12 1.4.35.68.23 1.32.57.63.35 1.16.83-.35 0-.7.07-.33.07-.65.23v-.02q-.63.28-1.2.74-.57.46-1.05 1.04-.48.58-.87 1.26-.38.67-.65 1.39-.27.71-.42 1.44-.15.72-.15 1.38zM11.96.06q1.7 0 3.33.39 1.63.38 3.07 1.15 1.43.77 2.62 1.93 1.18 1.16 1.98 2.7.49.94.76 1.96.28 1 .28 2.08 0 .89-.23 1.7-.24.8-.69 1.48-.45.68-1.1 1.22-.64.53-1.45.88-.54.24-1.11.36-.58.13-1.16.13-.42 0-.97-.03-.54-.03-1.1-.12-.55-.1-1.05-.28-.5-.19-.84-.5-.12-.09-.23-.24-.1-.16-.1-.33 0-.15.16-.35.16-.2.35-.5.2-.28.36-.68.16-.4.16-.95 0-1.06-.4-1.96-.4-.91-1.06-1.64-.66-.74-1.52-1.28-.86-.55-1.79-.89-.84-.3-1.72-.44-.87-.14-1.76-.14-1.55 0-3.06.45T.94 7.55q.71-1.74 1.81-3.13 1.1-1.38 2.52-2.35Q6.68 1.1 8.37.58q1.7-.52 3.58-.52Z" },
+          brave: { color: "#FB542B", path: "M15.68 0l2.096 2.38s1.84-.512 2.709.358c.868.87 1.584 1.638 1.584 1.638l-.562 1.381.715 2.047s-2.104 7.98-2.35 8.955c-.486 1.919-.818 2.66-2.198 3.633-1.38.972-3.884 2.66-4.293 2.916-.409.256-.92.692-1.38.692-.46 0-.97-.436-1.38-.692a185.796 185.796 0 01-4.293-2.916c-1.38-.973-1.712-1.714-2.197-3.633-.247-.975-2.351-8.955-2.351-8.955l.715-2.047-.562-1.381s.716-.768 1.585-1.638c.868-.87 2.708-.358 2.708-.358L8.321 0h7.36zm-3.679 14.936c-.14 0-1.038.317-1.758.69-.72.373-1.242.637-1.409.742-.167.104-.065.301.087.409.152.107 2.194 1.69 2.393 1.866.198.175.489.464.687.464.198 0 .49-.29.688-.464.198-.175 2.24-1.759 2.392-1.866.152-.108.254-.305.087-.41-.167-.104-.689-.368-1.41-.741-.72-.373-1.617-.69-1.757-.69zm0-11.278s-.409.001-1.022.206-1.278.46-1.584.46c-.307 0-2.581-.434-2.581-.434S4.119 7.152 4.119 7.849c0 .697.339.881.68 1.243l2.02 2.149c.192.203.59.511.356 1.066-.235.555-.58 1.26-.196 1.977.384.716 1.042 1.194 1.464 1.115.421-.08 1.412-.598 1.776-.834.364-.237 1.518-1.19 1.518-1.554 0-.365-1.193-1.02-1.413-1.168-.22-.15-1.226-.725-1.247-.95-.02-.227-.012-.293.284-.851.297-.559.831-1.304.742-1.8-.089-.495-.95-.753-1.565-.986-.615-.232-1.799-.671-1.947-.74-.148-.068-.11-.133.339-.175.448-.043 1.719-.212 2.292-.052.573.16 1.552.403 1.632.532.079.13.149.134.067.579-.081.445-.5 2.581-.541 2.96-.04.38-.12.63.288.724.409.094 1.097.256 1.333.256s.924-.162 1.333-.256c.408-.093.329-.344.288-.723-.04-.38-.46-2.516-.541-2.961-.082-.445-.012-.45.067-.579.08-.129 1.059-.372 1.632-.532.573-.16 1.845.009 2.292.052.449.042.487.107.339.175-.148.069-1.332.508-1.947.74-.615.233-1.476.49-1.565.986-.09.496.445 1.241.742 1.8.297.558.304.624.284.85-.02.226-1.026.802-1.247.95-.22.15-1.413.804-1.413 1.169 0 .364 1.154 1.317 1.518 1.554.364.236 1.355.755 1.776.834.422.079 1.08-.4 1.464-1.115.384-.716.039-1.422-.195-1.977-.235-.555.163-.863.355-1.066l2.02-2.149c.341-.362.68-.546.68-1.243 0-.697-2.695-3.96-2.695-3.96s-2.274.436-2.58.436c-.307 0-.972-.256-1.585-.461-.613-.205-1.022-.206-1.022-.206z" },
+          opera: { color: "#FF1B2D", path: "M8.051 5.238c-1.328 1.566-2.186 3.883-2.246 6.48v.564c.061 2.598.918 4.912 2.246 6.479 1.721 2.236 4.279 3.654 7.139 3.654 1.756 0 3.4-.537 4.807-1.471C17.879 22.846 15.074 24 12 24c-.192 0-.383-.004-.57-.014C5.064 23.689 0 18.436 0 12 0 5.371 5.373 0 12 0h.045c3.055.012 5.84 1.166 7.953 3.055-1.408-.93-3.051-1.471-4.81-1.471-2.858 0-5.417 1.42-7.14 3.654h.003zM24 12c0 3.556-1.545 6.748-4.002 8.945-3.078 1.5-5.946.451-6.896-.205 3.023-.664 5.307-4.32 5.307-8.74 0-4.422-2.283-8.075-5.307-8.74.949-.654 3.818-1.703 6.896-.205C22.455 5.25 24 8.445 24 12z" },
+          vivaldi: { color: "#EF3939", path: "M12 0C6.75 0 3.817 0 1.912 1.904.007 3.81 0 6.75 0 12s0 8.175 1.912 10.08C3.825 23.985 6.75 24 12 24c5.25 0 8.183 0 10.088-1.904C23.993 20.19 24 17.25 24 12s0-8.175-1.912-10.08C20.175.015 17.25 0 12 0zm-.168 3a9 9 0 016.49 2.648 9 9 0 010 12.704A9 9 0 1111.832 3zM7.568 7.496a1.433 1.433 0 00-.142.004A1.5 1.5 0 006.21 9.75l1.701 3c.93 1.582 1.839 3.202 2.791 4.822a1.417 1.417 0 001.41.75 1.5 1.5 0 001.223-.81l4.447-7.762A1.56 1.56 0 0018 8.768a1.5 1.5 0 10-2.828.914 2.513 2.513 0 01.256 1.119v.246a2.393 2.393 0 01-2.52 2.13 2.348 2.348 0 01-1.965-1.214c-.307-.51-.6-1.035-.9-1.553-.42-.72-.826-1.41-1.246-2.16a1.433 1.433 0 00-1.229-.754Z" },
+          arc: { color: "#7E5BEF", path: "M23.9371 8.5089c.1471-.7147.0367-1.4661-.3364-2.0967-.4203-.7094-1.1035-1.1876-1.9075-1.3506a2.9178 2.9178 0 0 0-.5623-.0578h-.0105c-1.3768 0-2.5329.988-2.8061 2.3385-.1629.7935-.4782 1.5607-.9196 2.2701a.263.263 0 0 1-.2363.1205.2627.2627 0 0 1-.2209-.1468l-2.8587-5.9906c-.3626-.762-1.0142-1.361-1.8235-1.5975-1.3873-.4099-2.8166.2838-3.4052 1.524L5.897 9.7333c-.0788.1629-.31.1576-.3784-.0053v-.0052a2.8597 2.8597 0 0 0-2.6642-1.7972c-.3784 0-.7515.0736-1.1088.2207-1.4714.6148-2.1283 2.349-1.5187 3.8203.557 1.3295 1.4714 2.5855 2.659 3.668.084.0788.1103.1997.063.3048l-.9563 2.0074c-.6727 1.4188-.1314 3.1477 1.2664 3.8571.4099.2049.846.31 1.298.31 1.1035 0 2.123-.6411 2.5959-1.6395l.825-1.7289a.254.254 0 0 1 .3048-.1366c1.0037.2732 2.0127.4204 3.0058.4204 1.1193 0 2.2229-.1682 3.2896-.4782a.2626.2626 0 0 1 .3101.1366l.8145 1.7131c.4834 1.0195 1.4924 1.7131 2.6169 1.7184.4572 0 .8986-.0999 1.3138-.3101 1.403-.7094 1.939-2.4435 1.2664-3.8676L19.875 15.787c-.0473-.1051-.0263-.226.0578-.3048 1.9864-1.8497 3.4525-4.2723 4.0043-6.9733ZM6.2121 20.0172a1.835 1.835 0 0 1-.6764.7622 1.8352 1.8352 0 0 1-.9788.2835c-.2733 0-.5518-.063-.8093-.1891-.9038-.4467-1.2454-1.5713-.8093-2.4804l.7935-1.6658c.0684-.1471.2575-.1997.3837-.1051.1681.1209.3415.2365.5202.3521.6989.4467 1.4293.825 2.1808 1.1351.1419.0578.205.2154.1419.352l-.7462 1.5555Zm5.0763-2.0442c-4.2092 0-8.6548-2.8534-10.1262-6.4951a1.8286 1.8286 0 0 1 1.009-2.3805c.2259-.0893.4571-.1366.683-.1366.7252 0 1.4084.431 1.6974 1.1456.9196 2.2806 4.0043 4.2092 6.7368 4.2092.4204 0 .8408-.042 1.256-.1156a.2643.2643 0 0 1 .2837.1419l1.3768 2.9007c.0683.1471-.0105.3205-.1629.3626-.8986.2365-1.8182.3678-2.7536.3678Zm-.599-4.9291.6358-1.3348c.0526-.1051.205-.1051.2575 0l.6201 1.3033c.042.0841-.0158.1891-.1051.2049-.268.0368-.536.0578-.7988.0578a5.0634 5.0634 0 0 1-.4887-.0263c-.1103-.0157-.1629-.1208-.1208-.2049Zm8.4604 7.8246a1.831 1.831 0 0 1-2.0329-.2788 1.8292 1.8292 0 0 1-.4316-.5778l-4.987-10.4836c-.0998-.2102-.3994-.2102-.4939 0l-1.545 3.2529a.2623.2623 0 0 1-.3205.1366c-1.051-.3626-2.0495-.9774-2.7904-1.7184a.2552.2552 0 0 1-.0473-.2943l3.3421-7.031c.1156-.247.2943-.4677.5203-.6201 1.051-.6884 2.2806-.2575 2.7378.7041l6.8577 14.4248c.4309.9144.0946 2.0389-.8093 2.4856Zm-1.4451-9.6481a.258.258 0 0 1 .0315-.2732c.783-1.0037 1.3558-2.1756 1.6028-3.421.1734-.867.9354-1.4714 1.7919-1.4714.1472 0 .2943.0158.4467.0526.9722.2417 1.5344 1.2507 1.3295 2.2333-.4835 2.3017-1.6816 4.3879-3.3159 6.0222-.1313.1314-.3468.0946-.4256-.0683l-1.4609-3.0742Z" }
+        };
+        const BROWSER_EMOJI_FALLBACK = { safari: "\u{1F9ED}", comet: "\u2604\uFE0F", orion: "\u2B50", zen: "\u{1FAB7}" };
+        const LOW_CONFIDENCE_BROWSER_KEYS = /* @__PURE__ */ new Set(["chrome", "chromium"]);
+        const bar = containerEl.createDiv({ cls: "wechat-multiplatform-token-status" });
+        const dot = bar.createEl("span", { cls: "wechat-multiplatform-token-status-dot" });
+        const body = bar.createDiv({ cls: "wechat-bridge-status-body" });
+        if (!multiPlatformSettings.token) {
+          (_b = (_a = dot.classList) == null ? void 0 : _a.add) == null ? void 0 : _b.call(_a, "is-error");
+          dot.textContent = "\u672A\u586B\u5199";
+          body.createEl("span", { text: "\u8FDE\u63A5\u4EE4\u724C\u5C1A\u672A\u586B\u5199\u3002\u8BF7\u5230\u6D4F\u89C8\u5668\u6269\u5C55\u5F39\u7A97\u590D\u5236\u4EE4\u724C\u3002" });
+        } else if (liveClient) {
+          (_d = (_c = dot.classList) == null ? void 0 : _c.add) == null ? void 0 : _d.call(_c, "is-ok");
+          dot.textContent = "\u5DF2\u5C31\u7EEA";
+          renderBrowserIcon2(body, liveClient.browserName);
+          renderBrowserLabel2(body, liveClient.browserName, liveClient.profileLabel);
+          body.createEl("span", { cls: "wechat-bridge-status-time", text: fmtRelativeTime2(liveClient.lastSeenAt) });
+        } else if (lastClient) {
+          (_f = (_e = dot.classList) == null ? void 0 : _e.add) == null ? void 0 : _f.call(_e, "is-unknown");
+          dot.textContent = "\u5DF2\u65AD\u5F00";
+          renderBrowserIcon2(body, lastClient.browserName);
+          renderBrowserLabel2(body, lastClient.browserName, lastClient.profileLabel);
+          body.createEl("span", { text: " \u5DF2\u65AD\u5F00\uFF0C\u8BF7\u91CD\u542F\u6D4F\u89C8\u5668\u6269\u5C55\u91CD\u65B0\u8FDE\u63A5\u3002" });
+          body.createEl("span", { cls: "wechat-bridge-status-time", text: fmtRelativeTime2(lastClient.lastSeenAt) });
+        } else if (((_g = multiPlatformSettings.connection) == null ? void 0 : _g.status) === "connected") {
+          (_i = (_h = dot.classList) == null ? void 0 : _h.add) == null ? void 0 : _i.call(_h, "is-ok");
+          dot.textContent = "\u5DF2\u5C31\u7EEA";
+          const checkedAt = formatWechatsyncCheckedAt2(multiPlatformSettings.connection.checkedAt);
+          body.createEl("span", {
+            text: checkedAt ? `\u6D4F\u89C8\u5668\u6269\u5C55\u5DF2\u8FDE\u63A5\uFF0C\u53EF\u4EE5\u53D1\u5E03\u3002\u4E0A\u6B21\u68C0\u67E5 ${checkedAt}\u3002` : "\u6D4F\u89C8\u5668\u6269\u5C55\u5DF2\u8FDE\u63A5\uFF0C\u53EF\u4EE5\u53D1\u5E03\u3002"
+          });
+        } else if (((_j = multiPlatformSettings.connection) == null ? void 0 : _j.status) === "failed") {
+          (_l = (_k = dot.classList) == null ? void 0 : _k.add) == null ? void 0 : _l.call(_k, "is-error");
+          dot.textContent = "\u8FDE\u63A5\u5931\u8D25";
+          body.createEl("span", {
+            text: multiPlatformSettings.connection.message ? `${multiPlatformSettings.connection.message}\u3002\u8BF7\u68C0\u67E5\u7AEF\u53E3\u548C\u4EE4\u724C\u540E\u70B9\u51FB\u300C\u6D4B\u8BD5\u8FDE\u63A5\u300D\u3002` : "\u8BF7\u68C0\u67E5\u7AEF\u53E3\u548C\u4EE4\u724C\u540E\u70B9\u51FB\u300C\u6D4B\u8BD5\u8FDE\u63A5\u300D\u3002"
+          });
+        } else {
+          (_n = (_m = dot.classList) == null ? void 0 : _m.add) == null ? void 0 : _n.call(_m, "is-unknown");
+          dot.textContent = "\u7B49\u5F85\u8FDE\u63A5";
+          body.createEl("span", { text: "\u4EE4\u724C\u5DF2\u586B\u5199\uFF0C\u8BF7\u70B9\u51FB\u4E0B\u65B9\u300C\u6D4B\u8BD5\u8FDE\u63A5\u300D\u786E\u8BA4\u8FDE\u63A5\u3002" });
+        }
+      }
+      const getSupportedPlatformsFromExtension = async (bridge) => {
+        const response = await bridge.listSupportedPlatforms({ timeoutMs: 1e4 });
+        return normalizeWechatsyncPlatformList2(response);
+      };
+      const getAuthSnapshotFromExtension = async (bridge, platforms = [], fallbackPlatforms = []) => {
+        const response = await bridge.getAuthSnapshot({
+          platforms,
+          maxAgeMs: 864e5,
+          timeoutMs: 5e3
+        });
+        return normalizeWechatsyncAuthSnapshot2(response, fallbackPlatforms);
+      };
+      const hasExtensionPlatformList = Array.isArray(multiPlatformSettings.supportedPlatforms) && multiPlatformSettings.supportedPlatforms.length > 0 && ((_o = multiPlatformSettings.connection) == null ? void 0 : _o.status) === "connected";
+      const availablePlatforms = getAvailableWechatsyncPlatforms2(multiPlatformSettings);
+      const selectedPlatformSet = new Set(multiPlatformSettings.selectedPlatforms || []);
+      const hasCachedAuthState = availablePlatforms.some(
+        (platform) => platform.authKnown && platform.authStatus !== "bridge_required"
+      );
+      const getPlatformAuthBadge = (platform = {}) => {
+        var _a2;
+        return getWechatsyncPlatformStatusBadge2(platform, {
+          bridgeConnected: ((_a2 = multiPlatformSettings.connection) == null ? void 0 : _a2.status) === "connected"
+        });
+      };
+      const platformPicker = containerEl.createDiv({ cls: "wechat-platform-picker" });
+      const platformPickerHeader = platformPicker.createDiv({ cls: "wechat-platform-picker-header" });
+      const platformPickerTitle = platformPickerHeader.createDiv();
+      platformPickerTitle.createEl("div", { text: "\u53D1\u5E03\u5E73\u53F0\uFF08\u6D4F\u89C8\u5668\u63D2\u4EF6\u652F\u6301\uFF09", cls: "wechat-platform-picker-title" });
+      const checkedAtText = formatWechatsyncCheckedAt2((_p = multiPlatformSettings.connection) == null ? void 0 : _p.checkedAt);
+      platformPickerTitle.createEl("div", {
+        text: hasCachedAuthState ? `\u5DF2\u52FE\u9009\u5E73\u53F0\u4F1A\u663E\u793A\u4E0A\u6B21\u72B6\u6001${checkedAtText ? `\uFF08${checkedAtText}\uFF09` : ""}\uFF1B\u672C\u6B21\u53D1\u5E03\u4ECD\u4EE5\u6D4F\u89C8\u5668\u63D2\u4EF6\u5B9E\u9645\u7ED3\u679C\u4E3A\u51C6\u3002` : hasExtensionPlatformList ? "\u5E73\u53F0\u6E05\u5355\u6765\u81EA\u5F53\u524D\u8FDE\u63A5\u7684\u6D4F\u89C8\u5668\u63D2\u4EF6\uFF1B\u4EC5\u52FE\u9009\u7684\u5E73\u53F0\u4F1A\u663E\u793A\u4E0A\u6B21\u72B6\u6001\u3002" : "\u672A\u8FDE\u63A5\u63D2\u4EF6\u524D\u5148\u663E\u793A\u672C\u5730\u5907\u7528\u6E05\u5355\uFF1B\u8FDE\u63A5\u6210\u529F\u540E\u4F1A\u5237\u65B0\u4E3A\u63D2\u4EF6\u5B9E\u9645\u652F\u6301\u7684\u5E73\u53F0\u3002",
+        cls: "wechat-platform-picker-desc"
+      });
+      const platformSummary = platformPickerHeader.createDiv({ cls: "wechat-platform-picker-summary" });
+      const updatePlatformSummary = () => {
+        platformSummary.setText(`\u5DF2\u9009\u62E9 ${selectedPlatformSet.size} \u4E2A`);
+      };
+      updatePlatformSummary();
+      const platformGrid = platformPicker.createDiv({ cls: "wechat-platform-grid" });
+      const saveSelectedPlatforms = async () => {
+        const current = normalizeMultiPlatformSyncSettings2(plugin.settings.multiPlatformSync);
+        plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings2({
+          ...current,
+          selectedPlatforms: Array.from(selectedPlatformSet)
+        });
+        await plugin.saveSettings();
+      };
+      for (const platform of availablePlatforms) {
+        const authBadge = getPlatformAuthBadge(platform);
+        const isSelected = selectedPlatformSet.has(platform.id);
+        const chip = platformGrid.createEl("label", {
+          cls: `wechat-platform-chip ${isSelected ? `${authBadge.cls} is-selected` : ""}`
+        });
+        chip.setAttribute("title", isSelected ? `${platform.name} \xB7 ${authBadge.text}` : platform.name);
+        const checkbox = chip.createEl("input", { attr: { type: "checkbox" } });
+        checkbox.checked = isSelected;
+        checkbox.value = platform.id;
+        const chipBody = chip.createEl("span", { cls: "wechat-platform-chip-body" });
+        chipBody.createEl("span", { text: platform.name, cls: "wechat-platform-chip-name" });
+        const statusEl = chipBody.createEl("span", {
+          text: authBadge.text,
+          cls: `wechat-platform-chip-status ${authBadge.cls}`
+        });
+        statusEl.setAttribute("title", authBadge.text);
+        const setStatusVisible = (visible) => {
+          var _a2, _b2, _c2, _d2, _e2, _f2, _g2, _h2;
+          for (const cls of ["is-ok", "is-error", "is-unknown", "is-bridge"]) {
+            (_a2 = chip.removeClass) == null ? void 0 : _a2.call(chip, cls);
+            (_b2 = chip.classList) == null ? void 0 : _b2.remove(cls);
+            (_c2 = statusEl.removeClass) == null ? void 0 : _c2.call(statusEl, cls);
+            (_d2 = statusEl.classList) == null ? void 0 : _d2.remove(cls);
+          }
+          statusEl.textContent = authBadge.text;
+          if (visible) {
+            (_e2 = chip.addClass) == null ? void 0 : _e2.call(chip, authBadge.cls);
+            (_f2 = chip.classList) == null ? void 0 : _f2.add(authBadge.cls);
+            (_g2 = statusEl.addClass) == null ? void 0 : _g2.call(statusEl, authBadge.cls);
+            (_h2 = statusEl.classList) == null ? void 0 : _h2.add(authBadge.cls);
+          }
+          chip.setAttribute("title", visible ? `${platform.name} \xB7 ${authBadge.text}` : platform.name);
+        };
+        checkbox.onchange = async () => {
+          if (checkbox.checked) {
+            selectedPlatformSet.add(platform.id);
+            chip.addClass("is-selected");
+            setStatusVisible(true);
+            if (authBadge.status === "login_required") {
+              new Notice2(`${platform.name} \u4E0A\u6B21\u72B6\u6001\u4E3A\u9700\u767B\u5F55\u3002\u8BF7\u5148\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u6253\u5F00\u5E73\u53F0\u767B\u5F55\u9875\uFF0C\u6216\u7EE7\u7EED\u5C1D\u8BD5\u7531\u63D2\u4EF6\u8FD4\u56DE\u5B9E\u9645\u7ED3\u679C\u3002`, 8e3);
+            }
+          } else {
+            selectedPlatformSet.delete(platform.id);
+            chip.removeClass("is-selected");
+            setStatusVisible(false);
+          }
+          updatePlatformSummary();
+          await saveSelectedPlatforms();
+        };
+      }
+      new Setting2(containerEl).setName("\u6D4B\u8BD5\u8FDE\u63A5").setDesc("\u53EA\u9A8C\u8BC1 Obsidian\u3001\u6D4F\u89C8\u5668\u63D2\u4EF6\u548C\u8FDE\u63A5\u4EE4\u724C\u662F\u5426\u8FDE\u901A\uFF0C\u5E76\u8BFB\u53D6\u5E73\u53F0\u6E05\u5355\uFF1B\u4E0D\u4F1A\u5B9E\u65F6\u68C0\u6D4B\u6240\u6709\u5E73\u53F0\u767B\u5F55\u72B6\u6001\u3002").addButton((button) => button.setButtonText("\u6D4B\u8BD5").onClick(async () => {
+        var _a2, _b2, _c2, _d2, _e2, _f2;
+        button.setButtonText("\u7B49\u5F85\u63D2\u4EF6...");
+        (_a2 = button.setDisabled) == null ? void 0 : _a2.call(button, true);
+        const startedAt = Date.now();
+        let bridge = null;
+        let bridgeStartStatus = null;
+        let shouldRedisplay = false;
+        try {
+          const currentBeforeTest = normalizeMultiPlatformSyncSettings2(plugin.settings.multiPlatformSync);
+          console.debug("[Wechatsync] test connection started", {
+            port: (_b2 = plugin.settings.multiPlatformSync) == null ? void 0 : _b2.port,
+            hasToken: !!((_c2 = plugin.settings.multiPlatformSync) == null ? void 0 : _c2.token),
+            forceRefresh: false
+          });
+          bridge = plugin.getWechatSyncBridgeService();
+          bridgeStartStatus = await bridge.start();
+          console.debug("[Wechatsync] bridge started", bridgeStartStatus);
+          await bridge.waitForConnection(15e3);
+          console.debug("[Wechatsync] extension connection ready", {
+            elapsedMs: Date.now() - startedAt
+          });
+          let health = null;
+          let capabilities = {};
+          try {
+            health = await retryRecoverableBridgeOperation2(async ({ attempt }) => {
+              if (attempt > 0) {
+                console.debug("[Wechatsync] retrying health after bridge recovery window", { attempt });
+              }
+              const healthResult = await bridge.health({ timeoutMs: 5e3 });
+              if ((healthResult == null ? void 0 : healthResult.tokenValid) === false) {
+                const authError = new Error("\u8FDE\u63A5\u4EE4\u724C\u6821\u9A8C\u5931\u8D25\u3002\u8BF7\u786E\u8BA4 Obsidian \u4E0E\u6D4F\u89C8\u5668\u63D2\u4EF6\u4F7F\u7528\u540C\u4E00\u4E2A\u8FDE\u63A5\u4EE4\u724C\u3002");
+                authError.code = "AUTH_FAILED";
+                throw authError;
+              }
+              if ((healthResult == null ? void 0 : healthResult.ok) === false) {
+                const healthError = new Error(healthResult.error || "\u6D4F\u89C8\u5668\u63D2\u4EF6\u5065\u5EB7\u68C0\u67E5\u5931\u8D25");
+                healthError.code = "BRIDGE_REQUEST_TIMEOUT";
+                throw healthError;
+              }
+              return healthResult;
+            }, {
+              retries: 2,
+              delayMs: 1e3,
+              logger: console,
+              label: "settings health"
+            });
+            console.debug("[Wechatsync] health result", health);
+            capabilities = normalizeWechatSyncCapabilities2(health == null ? void 0 : health.capabilities);
+          } catch (healthError) {
+            if (!isWechatSyncUnsupportedMethodError2(healthError))
+              throw healthError;
+            console.warn("[Wechatsync] extension does not support health, falling back to socket-only check", healthError);
+          }
+          let supportedPlatforms = [];
+          try {
+            supportedPlatforms = await getSupportedPlatformsFromExtension(bridge);
+            console.debug("[Wechatsync] supported platforms loaded", {
+              count: supportedPlatforms.length,
+              platforms: supportedPlatforms.map((platform) => platform.id)
+            });
+          } catch (platformError) {
+            if (isWechatSyncUnsupportedMethodError2(platformError)) {
+              console.warn("[Wechatsync] extension does not support listSupportedPlatforms, keeping fallback list", platformError);
+            } else {
+              console.warn("[Wechatsync] listSupportedPlatforms failed, keeping existing platform list", platformError);
+            }
+          }
+          const selectedPlatformIds = parseWechatsyncPlatformIds2(currentBeforeTest.selectedPlatforms || []);
+          const current = normalizeMultiPlatformSyncSettings2(plugin.settings.multiPlatformSync);
+          const nextPlatforms = normalizeWechatsyncPlatformList2(current.connection.platforms || []).filter((platform) => selectedPlatformIds.includes(platform.id));
+          plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings2({
+            ...current,
+            supportedPlatforms: supportedPlatforms.length ? supportedPlatforms : current.supportedPlatforms,
+            connection: {
+              ...current.connection,
+              status: "connected",
+              checkedAt: Date.now(),
+              platforms: nextPlatforms,
+              capabilities,
+              message: health ? "\u5DF2\u8FDE\u63A5\uFF0C\u8FDE\u63A5\u4EE4\u724C\u5DF2\u901A\u8FC7\u63D2\u4EF6\u6821\u9A8C\u3002\u672A\u8BFB\u53D6\u5E73\u53F0\u767B\u5F55\u72B6\u6001\u3002" : "\u5DF2\u8FDE\u63A5\u3002\u5F53\u524D\u63D2\u4EF6\u7248\u672C\u672A\u63D0\u4F9B\u5065\u5EB7\u6821\u9A8C\uFF0C\u5E73\u53F0\u767B\u5F55\u72B6\u6001\u672A\u81EA\u52A8\u68C0\u6D4B\u3002"
+            }
+          });
+          await plugin.saveSettings();
+          shouldRedisplay = true;
+          new Notice2(health ? "\u2705 \u5DF2\u8FDE\u63A5\u6D4F\u89C8\u5668\u63D2\u4EF6\uFF0C\u8FDE\u63A5\u4EE4\u724C\u6821\u9A8C\u901A\u8FC7" : "\u2705 \u5DF2\u8FDE\u63A5\u6D4F\u89C8\u5668\u63D2\u4EF6");
+        } catch (error) {
+          let bridgeStatusAfterFailure = null;
+          let diagnostics = null;
+          try {
+            bridgeStatusAfterFailure = await ((_d2 = bridge == null ? void 0 : bridge.getStatus) == null ? void 0 : _d2.call(bridge));
+          } catch (statusError) {
+            bridgeStatusAfterFailure = { error: (statusError == null ? void 0 : statusError.message) || String(statusError) };
+          }
+          try {
+            diagnostics = ((_e2 = bridge == null ? void 0 : bridge.getDiagnostics) == null ? void 0 : _e2.call(bridge)) || null;
+          } catch (e) {
+            diagnostics = null;
+          }
+          let detailedMessage = error.message || "\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u5931\u8D25";
+          let hint = "";
+          if ((error == null ? void 0 : error.code) === "EXTENSION_NOT_CONNECTED" && (diagnostics == null ? void 0 : diagnostics.helloRejections) > 0) {
+            const last = diagnostics.lastHelloRejection;
+            const reason = last == null ? void 0 : last.reason;
+            if (reason === "token_mismatch") {
+              detailedMessage = '\u914D\u5BF9\u4EE4\u724C\u4E0D\u4E00\u81F4\u3002\u5982\u679C\u4F60\u521A\u521A\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u91CD\u7F6E\u8FC7\u4EE4\u724C\uFF0C\u8BF7\u590D\u5236\u65B0\u4EE4\u724C\u5E76\u7C98\u8D34\u5230\u4E0B\u65B9"\u8FDE\u63A5\u4EE4\u724C"\u8F93\u5165\u6846\u3002';
+            } else if (reason === "hello_timeout") {
+              detailedMessage = "\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u540E\u672A\u5728\u9650\u5B9A\u65F6\u95F4\u5185\u5B8C\u6210\u63E1\u624B\u3002\u53EF\u80FD\u6269\u5C55\u7248\u672C\u8FC7\u65E7\u6216\u672A\u542F\u7528\u63E1\u624B\u3002";
+            } else if (reason === "invalid_payload") {
+              detailedMessage = "\u6D4F\u89C8\u5668\u63D2\u4EF6\u53D1\u9001\u7684\u63E1\u624B\u6570\u636E\u683C\u5F0F\u4E0D\u6B63\u786E\u3002\u8BF7\u5347\u7EA7\u6D4F\u89C8\u5668\u63D2\u4EF6\u5230\u652F\u6301\u5B89\u5168\u63E1\u624B\u7684\u7248\u672C\u3002";
+            } else if (reason === "version_unsupported") {
+              detailedMessage = "\u6D4F\u89C8\u5668\u63D2\u4EF6\u7248\u672C\u4E0E Obsidian \u4E0D\u517C\u5BB9\uFF0C\u63E1\u624B\u88AB\u62D2\u7EDD\u3002\u8BF7\u5347\u7EA7\u6D4F\u89C8\u5668\u63D2\u4EF6\u3002";
+            } else if (reason) {
+              detailedMessage = `\u6D4F\u89C8\u5668\u63D2\u4EF6\u63E1\u624B\u5931\u8D25\uFF08${reason}\uFF09\u3002\u8BF7\u68C0\u67E5\u6D4F\u89C8\u5668\u63D2\u4EF6\u7248\u672C\u4E0E\u8FDE\u63A5\u4EE4\u724C\u3002`;
+            }
+            hint = "";
+          } else if (["EXTENSION_NOT_CONNECTED", "BRIDGE_UNAVAILABLE", "BRIDGE_REQUEST_TIMEOUT"].includes(error == null ? void 0 : error.code)) {
+            hint = "\u8BF7\u786E\u8BA4\u6D4F\u89C8\u5668\u6B63\u5728\u8FD0\u884C\u3001\u5DF2\u5B89\u88C5\u6D4F\u89C8\u5668\u63D2\u4EF6\uFF0C\u5E76\u68C0\u67E5\u5730\u5740\u3001\u7AEF\u53E3\u548C\u8FDE\u63A5\u4EE4\u724C\u4E0E\u8FD9\u91CC\u4E00\u81F4\u3002";
+          } else if ((error == null ? void 0 : error.code) === "EXTENSION_NOT_AUTHENTICATED") {
+            detailedMessage = "\u6D4F\u89C8\u5668\u63D2\u4EF6\u5DF2\u8FDE\u63A5\u4F46\u5C1A\u672A\u901A\u8FC7\u8BA4\u8BC1\u3002\u8BF7\u786E\u8BA4\u63D2\u4EF6\u5DF2\u5347\u7EA7\u5230\u652F\u6301\u5B89\u5168\u63E1\u624B\u7684\u7248\u672C\uFF0C\u4E14\u4F7F\u7528\u4E0E Obsidian \u4E00\u81F4\u7684\u8FDE\u63A5\u4EE4\u724C\u3002";
+          }
+          console.error("[Wechatsync] test connection failed", {
+            elapsedMs: Date.now() - startedAt,
+            code: error == null ? void 0 : error.code,
+            message: (error == null ? void 0 : error.message) || String(error),
+            stack: error == null ? void 0 : error.stack,
+            bridgeStartStatus,
+            bridgeStatusAfterFailure,
+            diagnostics,
+            detailedMessage
+          });
+          plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings2({
+            ...plugin.settings.multiPlatformSync,
+            connection: {
+              status: "failed",
+              checkedAt: Date.now(),
+              platforms: [],
+              capabilities: {},
+              message: detailedMessage
+            }
+          });
+          await plugin.saveSettings();
+          new Notice2(`\u274C ${detailedMessage}${hint ? ` ${hint}` : ""}`, 12e3);
+          shouldRedisplay = true;
+        } finally {
+          (_f2 = button.setDisabled) == null ? void 0 : _f2.call(button, false);
+          button.setButtonText("\u6D4B\u8BD5");
+          if (shouldRedisplay)
+            tab.display();
+        }
+      }));
+      new Setting2(containerEl).setName("\u8BFB\u53D6\u5DF2\u9009\u5E73\u53F0\u72B6\u6001").setDesc("\u8BFB\u53D6\u6D4F\u89C8\u5668\u63D2\u4EF6\u7F13\u5B58\u7684\u4E0A\u6B21\u72B6\u6001\uFF0C\u4E0D\u4F1A\u5B9E\u65F6\u68C0\u6D4B\u767B\u5F55\uFF1B\u53D1\u5E03\u65F6\u4ECD\u4EE5\u6D4F\u89C8\u5668\u63D2\u4EF6\u5B9E\u9645\u6267\u884C\u4E3A\u51C6\u3002").addButton((button) => button.setButtonText("\u8BFB\u53D6").onClick(async () => {
+        var _a2, _b2, _c2, _d2;
+        const current = normalizeMultiPlatformSyncSettings2(plugin.settings.multiPlatformSync);
+        const platformById = new Map(
+          getAvailableWechatsyncPlatforms2(current).map((platform) => [platform.id, platform])
+        );
+        const candidates = parseWechatsyncPlatformIds2(current.selectedPlatforms || []).map((id) => platformById.get(id) || { id, name: id }).filter((platform) => platform.id);
+        if (!candidates.length) {
+          new Notice2("\u8BF7\u5148\u52FE\u9009\u81F3\u5C11\u4E00\u4E2A\u53D1\u5E03\u5E73\u53F0");
+          return;
+        }
+        button.setButtonText("\u8BFB\u53D6\u4E2D...");
+        (_a2 = button.setDisabled) == null ? void 0 : _a2.call(button, true);
+        const startedAt = Date.now();
+        try {
+          const bridge = plugin.getWechatSyncBridgeService();
+          await bridge.start();
+          await bridge.waitForConnection(15e3);
+          const platformFallbacks = mergeWechatsyncPlatformLists2(
+            current.supportedPlatforms,
+            (_b2 = current.connection) == null ? void 0 : _b2.platforms,
+            getFallbackWechatsyncPlatforms2()
+          );
+          const authSnapshot = await getAuthSnapshotFromExtension(
+            bridge,
+            candidates.map((platform) => platform.id),
+            platformFallbacks
+          );
+          const cachedPlatforms = normalizeWechatsyncPlatformList2(authSnapshot.platforms || []);
+          console.debug("[Wechatsync] selected platform cached auth snapshot summary", {
+            elapsedMs: Date.now() - startedAt,
+            checkedAt: authSnapshot.checkedAt,
+            ...summarizeWechatsyncPlatformResponse2(cachedPlatforms)
+          });
+          plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings2({
+            ...current,
+            connection: {
+              ...current.connection,
+              status: "connected",
+              checkedAt: authSnapshot.checkedAt || Date.now(),
+              platforms: cachedPlatforms,
+              capabilities: {
+                ...((_c2 = current.connection) == null ? void 0 : _c2.capabilities) || {},
+                getAuthSnapshot: true
+              },
+              message: "\u5DF2\u8BFB\u53D6\u6240\u9009\u5E73\u53F0\u7684\u4E0A\u6B21\u767B\u5F55\u72B6\u6001\u3002"
+            }
+          });
+          await plugin.saveSettings();
+          const authenticatedCount = cachedPlatforms.filter((platform) => platform.authenticated).length;
+          new Notice2(`\u2705 \u5DF2\u8BFB\u53D6 ${cachedPlatforms.length} \u4E2A\u5DF2\u9009\u5E73\u53F0\uFF0C${authenticatedCount} \u4E2A\u4E0A\u6B21\u53EF\u7528`);
+          tab.display();
+        } catch (error) {
+          console.error("[Wechatsync] selected platform cached auth snapshot failed", {
+            elapsedMs: Date.now() - startedAt,
+            code: error == null ? void 0 : error.code,
+            message: (error == null ? void 0 : error.message) || String(error)
+          });
+          new Notice2(`\u274C \u8BFB\u53D6\u5931\u8D25\uFF1A${error.message}`, 1e4);
+        } finally {
+          (_d2 = button.setDisabled) == null ? void 0 : _d2.call(button, false);
+          button.setButtonText("\u8BFB\u53D6");
+        }
+      }));
+    }
+    module2.exports = { renderMultiPlatformSettingsTab: renderMultiPlatformSettingsTab2 };
+  }
+});
+
+// views/publish-modal/multi-platform.js
+var require_multi_platform = __commonJS({
+  "views/publish-modal/multi-platform.js"(exports2, module2) {
+    var obsidian = require("obsidian");
+    var { Notice: Notice2, Platform: Platform2 } = obsidian;
+    var {
+      isWechatSyncConnectionFailure: isWechatSyncConnectionFailure2,
+      getWechatsyncPlatformStatusBadge: getWechatsyncPlatformStatusBadge2,
+      normalizeWechatSyncResponseResults: normalizeWechatSyncResponseResults2,
+      normalizeWechatsyncPlatform: normalizeWechatsyncPlatform2,
+      summarizeWechatsyncPlatformResponse: summarizeWechatsyncPlatformResponse2,
+      updateCachedPlatformsAfterSync: updateCachedPlatformsAfterSync2
+    } = require_wechatsync_results();
+    var {
+      isUnsupportedBridgeMethodError: isWechatSyncUnsupportedMethodError2
+    } = require_wechatsync_bridge();
+    var {
+      getAvailableWechatsyncPlatforms: getAvailableWechatsyncPlatforms2,
+      normalizeWechatSyncCapabilities: normalizeWechatSyncCapabilities2,
+      normalizeMultiPlatformConnection: normalizeMultiPlatformConnection2,
+      normalizeMultiPlatformSyncSettings: normalizeMultiPlatformSyncSettings2,
+      normalizeWechatSyncRecentTasks: normalizeWechatSyncRecentTasks2,
+      parseWechatsyncPlatformIds: parseWechatsyncPlatformIds2
+    } = require_wechatsync_settings();
+    var {
+      describeWechatsyncConnectionState: describeWechatsyncConnectionState2,
+      renderWechatsyncConnectionStatusBar: renderWechatsyncConnectionStatusBar2
+    } = require_connection_status_bar();
+    var { stripMarkdownFrontmatter: stripMarkdownFrontmatter2 } = require_markdown_utils();
+    var {
+      findAssetForCover,
+      formatArticleImageWarnings,
+      resolveArticleImages
+    } = require_article_image_assets();
+    var QUOTA_POLICY = "truncate";
+    var FREE_DAILY_PLATFORM_QUOTA = 3;
+    var MODAL_SELECTED_PLATFORM_IDS = "__wechatMultiPlatformSelectedPlatformIds";
+    function getQuotaHintText(selectedCount = 0) {
+      if (selectedCount > FREE_DAILY_PLATFORM_QUOTA) {
+        return `\u5DF2\u9009 ${selectedCount} \u4E2A\u5E73\u53F0\uFF1B\u514D\u8D39\u7248\u6BCF\u5929 ${FREE_DAILY_PLATFORM_QUOTA} \u4E2A\u5E73\u53F0\u989D\u5EA6\uFF0C\u8D85\u51FA\u90E8\u5206\u4F1A\u81EA\u52A8\u8DF3\u8FC7\u3002`;
+      }
+      if (selectedCount === FREE_DAILY_PLATFORM_QUOTA) {
+        return `\u5DF2\u9009 ${selectedCount} \u4E2A\u5E73\u53F0\uFF0C\u521A\u597D\u8FBE\u5230\u514D\u8D39\u7248\u6BCF\u5929 ${FREE_DAILY_PLATFORM_QUOTA} \u4E2A\u5E73\u53F0\u989D\u5EA6\u3002`;
+      }
+      if (selectedCount > 0) {
+        return `\u5DF2\u9009 ${selectedCount} \u4E2A\u5E73\u53F0\uFF1B\u514D\u8D39\u7248\u6BCF\u5929 ${FREE_DAILY_PLATFORM_QUOTA} \u4E2A\u5E73\u53F0\u989D\u5EA6\u3002`;
+      }
+      return `\u514D\u8D39\u7248\u6BCF\u5929 ${FREE_DAILY_PLATFORM_QUOTA} \u4E2A\u5E73\u53F0\u989D\u5EA6\u3002`;
+    }
+    function isMobileClient2(app) {
+      if (typeof (Platform2 == null ? void 0 : Platform2.isMobile) === "boolean")
+        return Platform2.isMobile;
+      return !!(app == null ? void 0 : app.isMobile);
+    }
+    function openPublisherProPage(view) {
+      if (typeof (view == null ? void 0 : view.openPublisherProPage) === "function")
+        return view.openPublisherProPage();
+      if (typeof (view == null ? void 0 : view.openExternalUrl) === "function") {
+        return view.openExternalUrl("https://xiaoweibox.top/obsidian-publisher/pro/");
+      }
+      return false;
+    }
+    function openPublisherGuidePage(view, section = "install-extension") {
+      if (typeof (view == null ? void 0 : view.openPublisherGuidePage) === "function") {
+        return view.openPublisherGuidePage(section);
+      }
+      if (typeof (view == null ? void 0 : view.openExternalUrl) === "function") {
+        const hash = section === "bridge" ? "bridge" : "install-extension";
+        return view.openExternalUrl(`https://xiaoweibox.top/obsidian-publisher/guide/?from=obsidian-plugin#${hash}`);
+      }
+      return false;
+    }
+    function getBridgeSafeSessionCover(cover) {
+      const value = String(cover || "").trim();
+      if (/^(data:image\/|https?:\/\/)/i.test(value))
+        return value;
+      return "";
+    }
+    function getModalSelectedPlatformIds(modal, defaultSelectedPlatforms) {
+      if (!Array.isArray(modal == null ? void 0 : modal[MODAL_SELECTED_PLATFORM_IDS])) {
+        modal[MODAL_SELECTED_PLATFORM_IDS] = Array.from(defaultSelectedPlatforms);
+      }
+      return new Set(parseWechatsyncPlatformIds2(modal[MODAL_SELECTED_PLATFORM_IDS]));
+    }
+    function saveModalSelectedPlatformIds(modal, selectedPlatforms) {
+      if (!modal)
+        return;
+      modal[MODAL_SELECTED_PLATFORM_IDS] = Array.from(selectedPlatforms);
+    }
+    async function detectQuotaPolicySupport(bridge, cachedConnection = {}) {
+      var _a;
+      const cachedCapabilities = normalizeWechatSyncCapabilities2(cachedConnection.capabilities || {});
+      if (cachedCapabilities.quotaPolicy === true)
+        return cachedCapabilities;
+      if (!bridge || typeof bridge.health !== "function")
+        return cachedCapabilities;
+      try {
+        const health = await bridge.health({ timeoutMs: 5e3 });
+        return {
+          ...cachedCapabilities,
+          ...normalizeWechatSyncCapabilities2((health == null ? void 0 : health.capabilities) || {})
+        };
+      } catch (error) {
+        if (isWechatSyncUnsupportedMethodError2(error))
+          return cachedCapabilities;
+        (_a = console.debug) == null ? void 0 : _a.call(console, "[Wechatsync] quota feature detection skipped", {
+          code: error == null ? void 0 : error.code,
+          message: (error == null ? void 0 : error.message) || String(error)
+        });
+        return cachedCapabilities;
+      }
+    }
+    async function showMultiPlatformPublishModal2(view, options = {}) {
+      var _a;
+      if (!view.currentHtml) {
+        new Notice2(view.getMissingRenderNotice());
+        return;
+      }
+      const modal = options.modal || new obsidian.Modal(view.app);
+      const shouldOpenModal = !options.modal;
+      const mobileSync = isMobileClient2(view.app);
+      const bridgeSettings = normalizeMultiPlatformSyncSettings2(view.plugin.settings.multiPlatformSync);
+      const cachedConnection = bridgeSettings.connection || normalizeMultiPlatformConnection2();
+      view.preparePublishModalShell(modal, { mode: "multi", mobileSync });
+      const { wechatTab } = view.createPublishModeTabs(modal, "multi");
+      wechatTab.onclick = () => {
+        view.showSyncModal({ modal });
+      };
+      const intro = modal.contentEl.createDiv({ cls: "wechat-multiplatform-intro" });
+      const introText = intro.createDiv({ cls: "wechat-multiplatform-intro-text" });
+      introText.createEl("p", {
+        text: "\u9009\u62E9\u5E73\u53F0\u540E\u901A\u8FC7\u6D4F\u89C8\u5668\u63D2\u4EF6\u4FDD\u5B58\u4E3A\u8349\u7A3F\u3002"
+      });
+      const quotaHint = modal.contentEl.createDiv({ cls: "wechat-multiplatform-quota-hint" });
+      const quotaText = quotaHint.createEl("span", {
+        text: getQuotaHintText(0)
+      });
+      const quotaUpgradeBtn = quotaHint.createEl("button", {
+        text: "\u5347\u7EA7 Pro",
+        cls: "wechat-multiplatform-quota-link"
+      });
+      quotaUpgradeBtn.onclick = () => openPublisherProPage(view);
+      if (!bridgeSettings.enabled) {
+        const disabledHint = modal.contentEl.createDiv({ cls: "wechat-sync-empty-state" });
+        disabledHint.createEl("h3", { text: "\u5C1A\u672A\u542F\u7528\u6D4F\u89C8\u5668\u63D2\u4EF6\u53D1\u5E03" });
+        disabledHint.createEl("p", { text: "\u8BF7\u5148\u5B89\u88C5\u6D4F\u89C8\u5668\u63D2\u4EF6\uFF0C\u518D\u5230\u8BBE\u7F6E\u4E2D\u542F\u7528\u6D4F\u89C8\u5668\u63D2\u4EF6\u53D1\u5E03\u3001\u6D4B\u8BD5\u8FDE\u63A5\u5E76\u9009\u62E9\u5E73\u53F0\u3002\u514D\u8D39\u7248\u6BCF\u5929\u53EF\u53D1\u5E03\u5230 3 \u4E2A\u5E73\u53F0\u3002" });
+        const settingsBtn = disabledHint.createEl("button", { text: "\u53BB\u8BBE\u7F6E", cls: "mod-cta" });
+        settingsBtn.onclick = () => {
+          modal.close();
+          if (!view.openPluginSettings()) {
+            new Notice2("\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u6253\u5F00 Obsidian \u53D1\u5E03\u52A9\u624B\u5E76\u5F00\u542F\u6D4F\u89C8\u5668\u63D2\u4EF6\u53D1\u5E03");
+          }
+        };
+        const guideBtn = disabledHint.createEl("button", { text: "\u5B89\u88C5\u6D4F\u89C8\u5668\u63D2\u4EF6\u6559\u7A0B" });
+        guideBtn.onclick = () => openPublisherGuidePage(view, "install-extension");
+        if (shouldOpenModal)
+          modal.open();
+        return;
+      }
+      const availablePlatforms = getAvailableWechatsyncPlatforms2(bridgeSettings);
+      const defaultSelectedPlatforms = new Set(
+        parseWechatsyncPlatformIds2(bridgeSettings.selectedPlatforms || [])
+      );
+      const displayedPlatforms = availablePlatforms.filter((p) => defaultSelectedPlatforms.has(p.id));
+      const isBridgeReady = cachedConnection.status === "connected";
+      const modalSelectedPlatforms = getModalSelectedPlatformIds(modal, defaultSelectedPlatforms);
+      {
+        const description = describeWechatsyncConnectionState2(cachedConnection, { variant: "modal" });
+        renderWechatsyncConnectionStatusBar2(modal.contentEl, description);
+      }
+      const platformListEl = modal.contentEl.createDiv({ cls: "wechat-multiplatform-list" });
+      const selectedPlatforms = /* @__PURE__ */ new Set();
+      console.debug("[Wechatsync] render cached platform state", {
+        status: cachedConnection.status,
+        checkedAt: cachedConnection.checkedAt,
+        message: cachedConnection.message,
+        ...summarizeWechatsyncPlatformResponse2(cachedConnection.platforms)
+      });
+      const btnRow = modal.contentEl.createDiv({ cls: "wechat-modal-buttons" });
+      const cancelBtn = btnRow.createEl("button", { text: "\u53D6\u6D88" });
+      const syncBtn = btnRow.createEl("button", { text: "\u53D1\u9001\u5230\u6D4F\u89C8\u5668\u63D2\u4EF6", cls: "mod-cta" });
+      syncBtn.disabled = true;
+      (_a = syncBtn.addClass) == null ? void 0 : _a.call(syncBtn, "apple-btn-disabled");
+      cancelBtn.onclick = () => modal.close();
+      const updateQuotaHintText = () => {
+        quotaText.textContent = getQuotaHintText(selectedPlatforms.size);
+      };
+      const updateSyncButtonState = () => {
+        var _a2, _b;
+        syncBtn.disabled = !isBridgeReady || selectedPlatforms.size === 0;
+        if (syncBtn.disabled) {
+          (_a2 = syncBtn.addClass) == null ? void 0 : _a2.call(syncBtn, "apple-btn-disabled");
+        } else {
+          (_b = syncBtn.removeClass) == null ? void 0 : _b.call(syncBtn, "apple-btn-disabled");
+        }
+        updateQuotaHintText();
+      };
+      const renderPlatforms = (platforms = []) => {
+        platformListEl.empty();
+        selectedPlatforms.clear();
+        const normalizedPlatforms = platforms.map((platform) => normalizeWechatsyncPlatform2(platform)).filter(Boolean);
+        if (normalizedPlatforms.length === 0) {
+          const empty = platformListEl.createDiv({ cls: "wechat-multiplatform-state" });
+          empty.createEl("div", { text: "\u8FD8\u6CA1\u6709\u53EF\u5206\u53D1\u7684\u5E73\u53F0", cls: "wechat-multiplatform-state-title" });
+          empty.createEl("p", { text: "\u8BF7\u5148\u8FDE\u63A5\u6D4F\u89C8\u5668\u63D2\u4EF6\uFF0C\u6216\u7A0D\u540E\u91CD\u8BD5\u8BFB\u53D6\u5E73\u53F0\u6E05\u5355\u3002" });
+          updateSyncButtonState();
+          return;
+        }
+        for (const platform of normalizedPlatforms) {
+          const authInfo = getWechatsyncPlatformStatusBadge2(platform, { bridgeConnected: isBridgeReady });
+          const isSelected = isBridgeReady && modalSelectedPlatforms.has(platform.id);
+          const row = platformListEl.createDiv({
+            cls: `wechat-multiplatform-platform ${isSelected ? `${authInfo.cls} is-selected` : ""}`
+          });
+          row.setAttribute("title", isSelected ? `${platform.name} \xB7 ${authInfo.text}` : platform.name);
+          const checkbox = row.createEl("input");
+          checkbox.type = "checkbox";
+          checkbox.value = platform.id;
+          checkbox.checked = isSelected;
+          checkbox.disabled = !isBridgeReady;
+          if (isSelected)
+            selectedPlatforms.add(platform.id);
+          const label = row.createEl("label", { cls: "wechat-multiplatform-platform-label" });
+          label.createEl("span", { text: platform.name, cls: "wechat-multiplatform-platform-name" });
+          const statusEl = label.createEl("span", {
+            text: authInfo.text,
+            cls: `wechat-multiplatform-platform-status ${authInfo.cls}`
+          });
+          statusEl.setAttribute("title", authInfo.text);
+          const setStatusVisible = (visible) => {
+            var _a2, _b, _c, _d, _e, _f, _g, _h;
+            for (const cls of ["is-ok", "is-error", "is-unknown", "is-bridge"]) {
+              (_a2 = row.removeClass) == null ? void 0 : _a2.call(row, cls);
+              (_b = row.classList) == null ? void 0 : _b.remove(cls);
+              (_c = statusEl.removeClass) == null ? void 0 : _c.call(statusEl, cls);
+              (_d = statusEl.classList) == null ? void 0 : _d.remove(cls);
+            }
+            statusEl.textContent = authInfo.text;
+            if (visible) {
+              (_e = row.addClass) == null ? void 0 : _e.call(row, authInfo.cls);
+              (_f = row.classList) == null ? void 0 : _f.add(authInfo.cls);
+              (_g = statusEl.addClass) == null ? void 0 : _g.call(statusEl, authInfo.cls);
+              (_h = statusEl.classList) == null ? void 0 : _h.add(authInfo.cls);
+            }
+            row.setAttribute("title", visible ? `${platform.name} \xB7 ${authInfo.text}` : platform.name);
+          };
+          label.onclick = () => {
+            if (!checkbox.disabled)
+              checkbox.click();
+          };
+          checkbox.onchange = () => {
+            var _a2, _b, _c, _d;
+            if (checkbox.checked) {
+              selectedPlatforms.add(platform.id);
+              (_a2 = row.addClass) == null ? void 0 : _a2.call(row, "is-selected");
+              (_b = row.classList) == null ? void 0 : _b.add("is-selected");
+              setStatusVisible(true);
+              if (authInfo.status === "login_required") {
+                new Notice2(`${platform.name} \u4E0A\u6B21\u72B6\u6001\u4E3A\u9700\u767B\u5F55\u3002\u8BF7\u5148\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u6253\u5F00\u5E73\u53F0\u767B\u5F55\u9875\uFF0C\u6216\u7EE7\u7EED\u5C1D\u8BD5\u7531\u63D2\u4EF6\u8FD4\u56DE\u5B9E\u9645\u7ED3\u679C\u3002`, 8e3);
+              }
+              if (authInfo.status === "unknown") {
+                new Notice2(`${platform.name} \u6B64\u524D\u672A\u68C0\u6D4B\uFF0C\u53D1\u5E03\u7ED3\u679C\u4EE5\u6D4F\u89C8\u5668\u63D2\u4EF6\u5B9E\u9645\u6267\u884C\u4E3A\u51C6\u3002`, 6e3);
+              }
+            } else {
+              selectedPlatforms.delete(platform.id);
+              (_c = row.removeClass) == null ? void 0 : _c.call(row, "is-selected");
+              (_d = row.classList) == null ? void 0 : _d.remove("is-selected");
+              setStatusVisible(false);
+            }
+            saveModalSelectedPlatformIds(modal, selectedPlatforms);
+            updateSyncButtonState();
+          };
+        }
+        updateSyncButtonState();
+      };
+      renderPlatforms(displayedPlatforms);
+      syncBtn.onclick = async () => {
+        var _a2, _b, _c, _d, _e;
+        if (!isBridgeReady) {
+          new Notice2("\u8BF7\u5148\u8FDE\u63A5\u6D4F\u89C8\u5668\u63D2\u4EF6\uFF0C\u518D\u53D1\u9001\u591A\u5E73\u53F0\u53D1\u5E03\u4EFB\u52A1\u3002", 8e3);
+          return;
+        }
+        if (selectedPlatforms.size === 0) {
+          new Notice2("\u8BF7\u5148\u9009\u62E9\u81F3\u5C11\u4E00\u4E2A\u5E73\u53F0");
+          return;
+        }
+        const activeFile = view.getPublishContextFile();
+        const title = (activeFile == null ? void 0 : activeFile.basename) || "\u65E0\u6807\u9898\u6587\u7AE0";
+        const rawMarkdown = stripMarkdownFrontmatter2(view.lastResolvedMarkdown || "");
+        const exportHtml = view.getCurrentExportHtml() || view.currentHtml || "";
+        const publishMeta = view.getFrontmatterPublishMeta(activeFile);
+        const rawCover = getBridgeSafeSessionCover(view.sessionCoverBase64) || publishMeta.cover || "";
+        const notice = new Notice2("\u6B63\u5728\u51C6\u5907\u5E76\u53D1\u9001\u5230\u6D4F\u89C8\u5668\u63D2\u4EF6...", 0);
+        syncBtn.disabled = true;
+        (_a2 = syncBtn.addClass) == null ? void 0 : _a2.call(syncBtn, "apple-btn-disabled");
+        const sendStartedAt = Date.now();
+        const requestedPlatformIds = Array.from(selectedPlatforms);
+        try {
+          const resolvedImages = await resolveArticleImages(rawMarkdown, activeFile, {
+            app: view.app,
+            cover: rawCover
+          });
+          if ((_b = resolvedImages.warnings) == null ? void 0 : _b.length) {
+            throw new Error(`\u672C\u5730\u56FE\u7247\u5904\u7406\u5931\u8D25\uFF1A${formatArticleImageWarnings(resolvedImages.warnings)}`);
+          }
+          const markdown = resolvedImages.markdown;
+          const assets = resolvedImages.assets;
+          const fallbackCover = view.getFirstImageFromArticle();
+          const cover = resolvedImages.cover || resolvedImages.firstImageSrc || (/^(https?:\/\/|data:image\/)/i.test(fallbackCover || "") ? fallbackCover : "") || "";
+          const content = await view.prepareHtmlForWechatsyncArticleViaBridge(exportHtml, assets);
+          const base64Matches = String(content || "").match(/data:image\/[a-z]+;base64,/gi);
+          if (base64Matches && base64Matches.length) {
+            console.error("[Wechatsync] bridge content contains inline base64 images \u2014 this should never happen on bridge flow. Likely a regression in prepareHtmlForWechatsyncArticleViaBridge or a forgotten callsite using the legacy preparator.", {
+              inlineBase64ImageCount: base64Matches.length,
+              contentLength: content.length,
+              assetCount: assets.length,
+              title
+            });
+          }
+          const coverAsset = findAssetForCover(cover, assets);
+          const coverThumbnail = coverAsset ? await view.generateCoverThumbnailFromAsset(coverAsset) : "";
+          console.info("[Wechatsync] enqueueSyncArticle started", {
+            platformCount: requestedPlatformIds.length,
+            platforms: requestedPlatformIds,
+            title,
+            hasMarkdown: !!markdown,
+            contentLength: content.length,
+            hasCover: !!cover,
+            hasCoverThumbnail: !!coverThumbnail,
+            coverThumbnailBytes: coverThumbnail.length,
+            assetCount: assets.length,
+            assetBytes: assets.reduce((sum, asset) => sum + (asset.size || 0), 0)
+          });
+          const bridge = view.plugin.getWechatSyncBridgeService();
+          const detectedCapabilities = await detectQuotaPolicySupport(bridge, cachedConnection);
+          let result = null;
+          let usedFallbackSend = false;
+          try {
+            result = await bridge.enqueueSyncArticle({
+              platforms: requestedPlatformIds,
+              title,
+              markdown,
+              content,
+              cover,
+              coverThumbnail,
+              assets,
+              source: "obsidian",
+              quotaPolicy: QUOTA_POLICY
+            });
+          } catch (enqueueError) {
+            if (!isWechatSyncUnsupportedMethodError2(enqueueError))
+              throw enqueueError;
+            usedFallbackSend = true;
+            console.warn("[Wechatsync] enqueueSyncArticle unsupported, falling back to one-way syncArticle", enqueueError);
+            result = await bridge.sendArticle({
+              platforms: requestedPlatformIds,
+              title,
+              markdown,
+              content,
+              cover,
+              coverThumbnail,
+              assets,
+              quotaPolicy: QUOTA_POLICY
+            });
+          }
+          console.info("[Wechatsync] enqueueSyncArticle accepted", {
+            elapsedMs: Date.now() - sendStartedAt,
+            resultKind: Array.isArray(result) ? "array" : typeof result,
+            syncId: result == null ? void 0 : result.syncId,
+            requestId: result == null ? void 0 : result.requestId,
+            accepted: result == null ? void 0 : result.accepted,
+            quotaBlocked: result == null ? void 0 : result.quotaBlocked,
+            skippedPlatforms: result == null ? void 0 : result.skippedPlatforms,
+            usedFallbackSend,
+            platformCount: requestedPlatformIds.length,
+            supportsQuotaPolicy: detectedCapabilities.quotaPolicy === true
+          });
+          const currentMultiPlatformSettings = normalizeMultiPlatformSyncSettings2(view.plugin.settings.multiPlatformSync);
+          if ((result == null ? void 0 : result.accepted) === false) {
+            notice.hide();
+            modal.close();
+            view.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings2({
+              ...currentMultiPlatformSettings,
+              connection: {
+                ...currentMultiPlatformSettings.connection,
+                status: "connected",
+                checkedAt: Date.now(),
+                capabilities: {
+                  ...((_c = currentMultiPlatformSettings.connection) == null ? void 0 : _c.capabilities) || {},
+                  ...detectedCapabilities
+                },
+                message: (result == null ? void 0 : result.message) || "\u6D4F\u89C8\u5668\u63D2\u4EF6\u5DF2\u62D2\u7EDD\u672C\u6B21\u53D1\u5E03\u3002"
+              }
+            });
+            await view.plugin.saveSettings();
+            view.showMultiPlatformQuotaBlockedModal({
+              quotaResult: result,
+              requestedPlatformIds
+            });
+            return;
+          }
+          if (result == null ? void 0 : result.syncId)
+            notice.setMessage("\u5DF2\u6295\u9012\uFF0C\u6B63\u5728\u8BFB\u53D6\u63D2\u4EF6\u4EFB\u52A1\u72B6\u6001...");
+          const taskSnapshot = (result == null ? void 0 : result.syncId) ? await view.getWechatsyncTaskSnapshot(bridge, result.syncId) : null;
+          const immediateResults = normalizeWechatSyncResponseResults2(result);
+          const taskResults = Array.isArray(taskSnapshot == null ? void 0 : taskSnapshot.platforms) ? taskSnapshot.platforms.map((item) => ({
+            platform: (item == null ? void 0 : item.id) || (item == null ? void 0 : item.platform),
+            platformName: item == null ? void 0 : item.name,
+            success: (item == null ? void 0 : item.success) === true || (item == null ? void 0 : item.status) === "success",
+            error: (item == null ? void 0 : item.error) || (item == null ? void 0 : item.message) || ""
+          })) : [];
+          const cachedPlatformsAfterSync = updateCachedPlatformsAfterSync2(
+            ((_d = currentMultiPlatformSettings.connection) == null ? void 0 : _d.platforms) || [],
+            immediateResults.length ? immediateResults : taskResults
+          );
+          notice.hide();
+          modal.close();
+          const nextRecentTasks = (result == null ? void 0 : result.syncId) ? normalizeWechatSyncRecentTasks2([
+            {
+              syncId: result.syncId,
+              title,
+              platforms: Array.isArray(result == null ? void 0 : result.publishedPlatforms) && result.publishedPlatforms.length ? result.publishedPlatforms : Array.isArray(result == null ? void 0 : result.platforms) && result.platforms.length ? result.platforms : requestedPlatformIds,
+              createdAt: Date.now()
+            },
+            ...currentMultiPlatformSettings.recentTasks || []
+          ]) : currentMultiPlatformSettings.recentTasks;
+          view.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings2({
+            ...currentMultiPlatformSettings,
+            recentTasks: nextRecentTasks,
+            connection: {
+              ...currentMultiPlatformSettings.connection,
+              status: "connected",
+              checkedAt: Date.now(),
+              platforms: cachedPlatformsAfterSync,
+              capabilities: {
+                ...((_e = currentMultiPlatformSettings.connection) == null ? void 0 : _e.capabilities) || {},
+                ...detectedCapabilities
+              },
+              message: ""
+            }
+          });
+          await view.plugin.saveSettings();
+          view.showWechatsyncEnqueueAcceptedModal({
+            syncId: (result == null ? void 0 : result.syncId) || "",
+            title,
+            platforms: requestedPlatformIds,
+            task: taskSnapshot,
+            usedFallbackSend,
+            quotaResult: result
+          });
+        } catch (error) {
+          notice.hide();
+          console.error("[Wechatsync] enqueueSyncArticle failed", {
+            elapsedMs: Date.now() - sendStartedAt,
+            code: error == null ? void 0 : error.code,
+            message: (error == null ? void 0 : error.message) || String(error),
+            stack: error == null ? void 0 : error.stack,
+            requestedPlatformIds
+          });
+          const displayMessage = (error == null ? void 0 : error.code) === "EXTENSION_NOT_AUTHENTICATED" ? '\u6D4F\u89C8\u5668\u63D2\u4EF6\u5DF2\u8FDE\u63A5\u4F46\u672A\u901A\u8FC7\u63E1\u624B\u8BA4\u8BC1\u3002\u5982\u679C\u4F60\u521A\u521A\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u91CD\u7F6E\u8FC7\u4EE4\u724C\uFF0C\u8BF7\u5230\u672C\u63D2\u4EF6\u7684"\u591A\u5E73\u53F0\u540C\u6B65"\u8BBE\u7F6E\u9875\u7C98\u8D34\u65B0\u4EE4\u724C\uFF1B\u5426\u5219\u8BF7\u786E\u8BA4\u63D2\u4EF6\u5DF2\u5347\u7EA7\u5230\u652F\u6301\u5B89\u5168\u63E1\u624B\u7684\u7248\u672C\u3002' : (error == null ? void 0 : error.message) || "\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u5931\u8D25";
+          if (isWechatSyncConnectionFailure2(error)) {
+            const currentMultiPlatformSettings = normalizeMultiPlatformSyncSettings2(view.plugin.settings.multiPlatformSync);
+            view.plugin.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings2({
+              ...currentMultiPlatformSettings,
+              connection: {
+                ...currentMultiPlatformSettings.connection,
+                status: "failed",
+                checkedAt: Date.now(),
+                message: displayMessage
+              }
+            });
+            await view.plugin.saveSettings();
+          }
+          modal.close();
+          new Notice2(`\u274C \u53D1\u9001\u5230\u6D4F\u89C8\u5668\u63D2\u4EF6\u5931\u8D25\uFF1A${displayMessage}`, 1e4);
+          view.showMultiPlatformSyncResultModal({
+            requestedPlatformIds,
+            fatalError: error
+          });
+        } finally {
+          updateSyncButtonState();
+        }
+      };
+      if (shouldOpenModal)
+        modal.open();
+    }
+    module2.exports = { showMultiPlatformPublishModal: showMultiPlatformPublishModal2 };
+  }
+});
+
 // input.js
 var { Plugin, MarkdownView, ItemView, Notice, Platform, requestUrl, request } = require("obsidian");
 var { PluginSettingTab, Setting } = require("obsidian");
@@ -11301,13 +14966,64 @@ var {
   testAiProviderConnection
 } = require_ai_layout();
 var { createWechatSyncService } = require_wechat_sync();
+var {
+  DEFAULT_WECHATSYNC_PORT,
+  createWechatSyncBridgeService,
+  isUnsupportedBridgeMethodError: isWechatSyncUnsupportedMethodError,
+  retryRecoverableBridgeOperation
+} = require_wechatsync_bridge();
+var {
+  buildWechatsyncPlatformCatalog,
+  getFallbackWechatsyncPlatforms,
+  getMultiPlatformResultSummary,
+  getWechatSyncResultError,
+  getWechatSyncResultPlatformId,
+  getWechatSyncResultUrl,
+  getWechatsyncPlatformStatusBadge,
+  isWechatSyncConnectionFailure,
+  normalizeWechatSyncResponseResults,
+  normalizeWechatsyncAuthSnapshot,
+  normalizeWechatsyncPlatform,
+  normalizeWechatsyncPlatformList,
+  probeWechatsyncPlatformsIndividually,
+  sortWechatsyncPlatformItemsForDisplay,
+  summarizeWechatsyncPlatformResponse,
+  updateCachedPlatformsAfterSync
+} = require_wechatsync_results();
 var { resolveSyncAccount, toSyncFriendlyMessage } = require_sync_context();
 var { processAllImages: processAllImagesService, processMathFormulas: processMathFormulasService } = require_wechat_media();
 var { cleanHtmlForDraft: cleanHtmlForDraftService } = require_wechat_html_cleaner();
 var { rasterizeSvgToPngBlob } = require_svg_rasterizer();
 var { createObsidianFetchAdapter } = require_obsidian_fetch_adapter();
+var { stripMarkdownFrontmatter } = require_markdown_utils();
+var { mapAppUrlImagesToAssetUrls } = require_article_image_assets();
 var APPLE_STYLE_VIEW = "apple-style-converter";
-var APPLE_STYLE_VIEW_TITLE = "\u5FAE\u4FE1\u516C\u4F17\u53F7\u8F6C\u6362\u5668";
+var APPLE_STYLE_VIEW_TITLE = "Obsidian \u53D1\u5E03\u52A9\u624B";
+var OBSIDIAN_PUBLISHER_PRO_URL = "https://xiaoweibox.top/obsidian-publisher/pro/";
+var OBSIDIAN_PUBLISHER_GUIDE_URL = "https://xiaoweibox.top/obsidian-publisher/guide/";
+var OBSIDIAN_PUBLISHER_EXTENSION_GUIDE_URL = `${OBSIDIAN_PUBLISHER_GUIDE_URL}?from=obsidian-plugin#install-extension`;
+var OBSIDIAN_PUBLISHER_BRIDGE_GUIDE_URL = `${OBSIDIAN_PUBLISHER_GUIDE_URL}?from=obsidian-plugin#bridge`;
+var MULTI_PLATFORM_TAB_LABEL = "\u5176\u4ED6\u5E73\u53F0\uFF08\u5C0F\u7EA2\u4E66/\u77E5\u4E4E/\u6296\u97F3\u7B49\uFF09";
+var {
+  createDefaultMultiPlatformSyncSettings,
+  normalizeWechatsyncPlatformId,
+  parseWechatsyncPlatformIds,
+  mergeWechatsyncPlatformLists,
+  normalizeWechatSyncCapabilities,
+  hasWechatSyncCapability,
+  normalizeWechatSyncRecentTasks,
+  normalizeMultiPlatformConnection,
+  normalizeMultiPlatformSyncSettings,
+  getConfiguredWechatsyncPlatforms,
+  getAvailableWechatsyncPlatforms
+} = require_wechatsync_settings();
+var {
+  formatWechatsyncCheckedAt,
+  describeWechatsyncConnectionState,
+  renderWechatsyncConnectionStatusBar
+} = require_connection_status_bar();
+var { renderMultiPlatformSettingsTab } = require_multi_platform_tab();
+var { showMultiPlatformPublishModal } = require_multi_platform();
 var IMAGE_SWIPE_COMMAND_COPY = {
   "image-swipe": {
     zhName: "\u63D2\u5165\u56FE\u7247\u5757",
@@ -11403,6 +15119,7 @@ var DEFAULT_SETTINGS = {
   cleanupUseSystemTrash: true,
   cleanupDirTemplate: "",
   // 发送成功后要清理的目录（支持 {{note}}）
+  multiPlatformSync: createDefaultMultiPlatformSyncSettings(),
   // 旧字段保留用于迁移检测
   wechatAppId: "",
   wechatAppSecret: "",
@@ -11734,7 +15451,7 @@ var AppleStyleView = class extends ItemView {
     return "wand";
   }
   async onOpen() {
-    console.log("\u{1F34E} \u8F6C\u6362\u5668\u9762\u677F\u6253\u5F00");
+    console.log("\u{1F34E} \u53D1\u5E03\u52A9\u624B\u9762\u677F\u6253\u5F00");
     const container = this.containerEl.children[1];
     container.empty();
     container.addClass("apple-converter-container");
@@ -12050,7 +15767,7 @@ var AppleStyleView = class extends ItemView {
     } else {
       this.copyBtn = null;
     }
-    createIconBtn("send", "\u4E00\u952E\u540C\u6B65\u5230\u8349\u7A3F\u7BB1", () => this.showSyncModal());
+    createIconBtn("send", "\u53D1\u5E03\u4E0E\u5206\u53D1", () => this.showSyncModal());
     this.settingsOverlay = container.createEl("div", { cls: "apple-settings-overlay" });
     const settingsArea = this.settingsOverlay.createEl("div", { cls: "apple-settings-area" });
     this.settingsArea = settingsArea;
@@ -14441,6 +18158,43 @@ var AppleStyleView = class extends ItemView {
     }
     return true;
   }
+  openExternalUrl(url, options = {}) {
+    var _a;
+    const target = String(url || "").trim();
+    const allowExtensionUrls = (options == null ? void 0 : options.allowExtensionUrls) === true;
+    const isHttpUrl = /^https?:\/\//i.test(target);
+    const isExtensionUrl = /^(chrome|edge|brave|moz)-extension:\/\//i.test(target);
+    if (!isHttpUrl && !(allowExtensionUrls && isExtensionUrl)) {
+      new Notice("\u8349\u7A3F\u94FE\u63A5\u4E0D\u53EF\u7528");
+      return false;
+    }
+    try {
+      const electron = require("electron");
+      if ((_a = electron == null ? void 0 : electron.shell) == null ? void 0 : _a.openExternal) {
+        electron.shell.openExternal(target);
+        return true;
+      }
+    } catch (e) {
+    }
+    if (typeof window !== "undefined" && typeof window.open === "function") {
+      window.open(target, "_blank", "noopener");
+      return true;
+    }
+    new Notice("\u65E0\u6CD5\u6253\u5F00\u8349\u7A3F\u94FE\u63A5\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u4E2D\u67E5\u770B\u540C\u6B65\u7ED3\u679C");
+    return false;
+  }
+  openPublisherProPage() {
+    return this.openExternalUrl(OBSIDIAN_PUBLISHER_PRO_URL);
+  }
+  openPublisherGuidePage(section = "") {
+    if (section === "bridge") {
+      return this.openExternalUrl(OBSIDIAN_PUBLISHER_BRIDGE_GUIDE_URL);
+    }
+    if (section === "install-extension") {
+      return this.openExternalUrl(OBSIDIAN_PUBLISHER_EXTENSION_GUIDE_URL);
+    }
+    return this.openExternalUrl(OBSIDIAN_PUBLISHER_GUIDE_URL);
+  }
   showAccountSetupEmptyState() {
     var _a;
     const { Modal } = require("obsidian");
@@ -14460,7 +18214,7 @@ var AppleStyleView = class extends ItemView {
     const emptyState = modal.contentEl.createDiv({ cls: "wechat-sync-empty-state" });
     emptyState.createEl("div", { cls: "wechat-sync-empty-icon", text: "\u2699\uFE0F" });
     emptyState.createEl("h3", { text: "\u5148\u914D\u7F6E\u516C\u4F17\u53F7\u8D26\u53F7" });
-    emptyState.createEl("p", { text: "\u8BF7\u5148\u5728\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u586B\u5199 AppID / AppSecret\uFF0C\u518D\u4F7F\u7528\u4E00\u952E\u540C\u6B65\u5230\u8349\u7A3F\u7BB1\u3002" });
+    emptyState.createEl("p", { text: "\u8BF7\u5148\u5728\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u586B\u5199 AppID / AppSecret\uFF0C\u518D\u53D1\u9001\u5230\u5FAE\u4FE1\u8349\u7A3F\u7BB1\u3002" });
     const btnRow = modal.contentEl.createDiv({ cls: "wechat-modal-buttons" });
     const cancelBtn = btnRow.createEl("button", { text: "\u53D6\u6D88" });
     cancelBtn.onclick = () => modal.close();
@@ -14468,7 +18222,7 @@ var AppleStyleView = class extends ItemView {
     configBtn.onclick = () => {
       modal.close();
       if (!this.openPluginSettings()) {
-        new Notice("\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u6253\u5F00 Wechat Converter \u5E76\u914D\u7F6E\u8D26\u53F7");
+        new Notice("\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u6253\u5F00 Obsidian \u53D1\u5E03\u52A9\u624B\u5E76\u914D\u7F6E\u516C\u4F17\u53F7\u8D26\u53F7");
       }
     };
     modal.open();
@@ -14497,7 +18251,7 @@ var AppleStyleView = class extends ItemView {
     settingsBtn.onclick = () => {
       modal.close();
       if (!this.openPluginSettings()) {
-        new Notice("\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u6253\u5F00 Wechat Converter \u5E76\u914D\u7F6E\u8D26\u53F7");
+        new Notice("\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u6253\u5F00 Obsidian \u53D1\u5E03\u52A9\u624B\u5E76\u914D\u7F6E\u516C\u4F17\u53F7\u8D26\u53F7");
       }
     };
     const retryBtn = btnRow.createEl("button", { text: "\u91CD\u8BD5\u540C\u6B65", cls: "mod-cta" });
@@ -14516,7 +18270,43 @@ var AppleStyleView = class extends ItemView {
   /**
    * 显示同步选项 Modal
    */
-  showSyncModal() {
+  preparePublishModalShell(modal, { mode = "wechat", mobileSync = false } = {}) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o;
+    modal.titleEl.setText("\u53D1\u5E03\u4E0E\u5206\u53D1");
+    (_b = (_a = modal.titleEl).removeClass) == null ? void 0 : _b.call(_a, "wechat-multiplatform-title");
+    if (typeof modal.contentEl.empty === "function") {
+      modal.contentEl.empty();
+    } else {
+      (_d = (_c = modal.contentEl).replaceChildren) == null ? void 0 : _d.call(_c);
+    }
+    modal.contentEl.addClass("wechat-sync-modal");
+    (_f = (_e = modal.contentEl).removeClass) == null ? void 0 : _f.call(_e, "wechat-multiplatform-modal");
+    (_h = (_g = modal.contentEl).removeClass) == null ? void 0 : _h.call(_g, "wechat-multiplatform-result-modal");
+    (_i = modal.modalEl) == null ? void 0 : _i.addClass("wechat-publish-shell");
+    (_k = (_j = modal.modalEl) == null ? void 0 : _j.removeClass) == null ? void 0 : _k.call(_j, "wechat-multiplatform-shell");
+    if (mobileSync) {
+      modal.contentEl.addClass("wechat-sync-modal-mobile");
+      (_l = modal.modalEl) == null ? void 0 : _l.addClass("wechat-sync-shell-mobile");
+    }
+    if (mode === "multi") {
+      (_n = (_m = modal.titleEl).addClass) == null ? void 0 : _n.call(_m, "wechat-multiplatform-title");
+      modal.contentEl.addClass("wechat-multiplatform-modal");
+      (_o = modal.modalEl) == null ? void 0 : _o.addClass("wechat-multiplatform-shell");
+    }
+  }
+  createPublishModeTabs(modal, activeMode = "wechat") {
+    const publishModeTabs = modal.contentEl.createDiv({ cls: "wechat-publish-mode-tabs" });
+    const wechatTab = publishModeTabs.createEl("button", {
+      text: "\u5FAE\u4FE1\u8349\u7A3F\u7BB1",
+      cls: `wechat-publish-mode-tab${activeMode === "wechat" ? " is-active" : ""}`
+    });
+    const multiPlatformTab = publishModeTabs.createEl("button", {
+      text: MULTI_PLATFORM_TAB_LABEL,
+      cls: `wechat-publish-mode-tab${activeMode === "multi" ? " is-active" : ""}`
+    });
+    return { wechatTab, multiPlatformTab };
+  }
+  showSyncModal(options = {}) {
     var _a, _b;
     if (!this.currentHtml) {
       new Notice(this.getMissingRenderNotice());
@@ -14524,18 +18314,38 @@ var AppleStyleView = class extends ItemView {
     }
     const accounts = this.plugin.settings.wechatAccounts || [];
     if (accounts.length === 0) {
+      if (options.modal) {
+        const modal2 = options.modal;
+        const mobileSync2 = isMobileClient(this.app);
+        this.preparePublishModalShell(modal2, { mode: "wechat", mobileSync: mobileSync2 });
+        const { multiPlatformTab: multiPlatformTab2 } = this.createPublishModeTabs(modal2, "wechat");
+        multiPlatformTab2.onclick = () => this.showMultiPlatformSyncModal({ modal: modal2 });
+        const empty = modal2.contentEl.createDiv({ cls: "wechat-sync-empty-state" });
+        empty.createEl("h3", { text: "\u5C1A\u672A\u914D\u7F6E\u5FAE\u4FE1\u516C\u4F17\u53F7\u8D26\u53F7" });
+        empty.createEl("p", { text: "\u5FAE\u4FE1\u8349\u7A3F\u7BB1\u9700\u8981\u5148\u914D\u7F6E\u516C\u4F17\u53F7 API\u3002\u5176\u4ED6\u5E73\u53F0\u4ECD\u53EF\u901A\u8FC7\u6D4F\u89C8\u5668\u63D2\u4EF6\u53D1\u9001\u3002" });
+        const settingsBtn = empty.createEl("button", { text: "\u53BB\u8BBE\u7F6E", cls: "mod-cta" });
+        settingsBtn.onclick = () => {
+          modal2.close();
+          this.openPluginSettings();
+        };
+        return;
+      }
+      if ((_a = this.plugin.settings.multiPlatformSync) == null ? void 0 : _a.enabled) {
+        this.showMultiPlatformSyncModal();
+        return;
+      }
       this.promptConfigureWechatAccount();
       return;
     }
     const { Modal } = require("obsidian");
-    const modal = new Modal(this.app);
+    const modal = options.modal || new Modal(this.app);
+    const shouldOpenModal = !options.modal;
     const mobileSync = isMobileClient(this.app);
-    modal.titleEl.setText("\u540C\u6B65\u5230\u5FAE\u4FE1\u8349\u7A3F\u7BB1");
-    modal.contentEl.addClass("wechat-sync-modal");
-    if (mobileSync) {
-      modal.contentEl.addClass("wechat-sync-modal-mobile");
-      (_a = modal.modalEl) == null ? void 0 : _a.addClass("wechat-sync-shell-mobile");
-    }
+    this.preparePublishModalShell(modal, { mode: "wechat", mobileSync });
+    const { multiPlatformTab } = this.createPublishModeTabs(modal, "wechat");
+    multiPlatformTab.onclick = () => {
+      this.showMultiPlatformSyncModal({ modal });
+    };
     const activeFile = this.getPublishContextFile();
     const currentPath = activeFile ? activeFile.path : null;
     const frontmatterMeta = this.getFrontmatterPublishMeta(activeFile);
@@ -14675,7 +18485,398 @@ var AppleStyleView = class extends ItemView {
       };
       input.click();
     };
+    if (shouldOpenModal)
+      modal.open();
+  }
+  async openWechatsyncTask(syncId) {
+    const taskId = String(syncId || "").trim();
+    if (!taskId) {
+      new Notice("\u5F53\u524D\u4EFB\u52A1\u6CA1\u6709 syncId\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u5386\u53F2\u8BB0\u5F55\u4E2D\u67E5\u770B\u6700\u8FD1\u4EFB\u52A1");
+      return false;
+    }
+    const settings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const bridge = this.plugin.getWechatSyncBridgeService();
+    try {
+      await bridge.start();
+      await bridge.waitForConnection(8e3);
+      const capabilities = settings.connection.capabilities || {};
+      if (capabilities.openSyncTask !== false) {
+        try {
+          const result = await bridge.openSyncTask(taskId, { timeoutMs: 8e3 });
+          if ((result == null ? void 0 : result.opened) !== false) {
+            new Notice("\u5DF2\u6253\u5F00\u6D4F\u89C8\u5668\u63D2\u4EF6\u4EFB\u52A1\u7A97\u53E3");
+            return true;
+          }
+        } catch (error) {
+          if (!isWechatSyncUnsupportedMethodError(error))
+            throw error;
+          console.warn("[Wechatsync] openSyncTask failed, falling back to task link", {
+            code: error == null ? void 0 : error.code,
+            message: (error == null ? void 0 : error.message) || String(error)
+          });
+        }
+      }
+      if (capabilities.getSyncTaskLink !== false) {
+        try {
+          const linkResult = await bridge.getSyncTaskLink(taskId, { timeoutMs: 5e3 });
+          const url = String((linkResult == null ? void 0 : linkResult.url) || "").trim();
+          if ((linkResult == null ? void 0 : linkResult.canOpen) !== false && url) {
+            return this.openExternalUrl(url, { allowExtensionUrls: true });
+          }
+          if (linkResult == null ? void 0 : linkResult.message) {
+            new Notice(linkResult.message, 8e3);
+            return false;
+          }
+        } catch (error) {
+          if (!isWechatSyncUnsupportedMethodError(error))
+            throw error;
+          console.warn("[Wechatsync] getSyncTaskLink failed", {
+            code: error == null ? void 0 : error.code,
+            message: (error == null ? void 0 : error.message) || String(error)
+          });
+        }
+      }
+      new Notice(`\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u5386\u53F2\u8BB0\u5F55\u4E2D\u67E5\u770B\u4EFB\u52A1\uFF1A${taskId}`, 1e4);
+      return false;
+    } catch (error) {
+      console.error("[Wechatsync] open task failed", {
+        syncId: taskId,
+        code: error == null ? void 0 : error.code,
+        message: (error == null ? void 0 : error.message) || String(error)
+      });
+      new Notice(`\u65E0\u6CD5\u6253\u5F00\u6D4F\u89C8\u5668\u63D2\u4EF6\u4EFB\u52A1\uFF1A${error.message || String(error)}`, 1e4);
+      return false;
+    }
+  }
+  async getWechatsyncTaskSnapshot(bridge, syncId) {
+    const taskId = String(syncId || "").trim();
+    if (!taskId)
+      return null;
+    const settings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    if (!hasWechatSyncCapability(settings, "getSyncTask"))
+      return null;
+    try {
+      const task = await bridge.getSyncTask(taskId, { timeoutMs: 5e3 });
+      if ((task == null ? void 0 : task.found) === false)
+        return task;
+      return task && typeof task === "object" ? task : null;
+    } catch (error) {
+      if (isWechatSyncUnsupportedMethodError(error))
+        return null;
+      console.warn("[Wechatsync] getSyncTask failed after enqueue", {
+        syncId: taskId,
+        code: error == null ? void 0 : error.code,
+        message: (error == null ? void 0 : error.message) || String(error)
+      });
+      return null;
+    }
+  }
+  showWechatsyncEnqueueAcceptedModal({
+    syncId = "",
+    title = "",
+    platforms = [],
+    task = null,
+    usedFallbackSend = false,
+    quotaResult = null
+  } = {}) {
+    var _a, _b, _c, _d, _e, _f, _g;
+    const { Modal } = require("obsidian");
+    const taskId = String(syncId || "").trim();
+    const skippedPlatformIds = parseWechatsyncPlatformIds((quotaResult == null ? void 0 : quotaResult.skippedPlatforms) || []);
+    const publishedPlatformIds = parseWechatsyncPlatformIds(
+      ((_a = quotaResult == null ? void 0 : quotaResult.publishedPlatforms) == null ? void 0 : _a.length) ? quotaResult.publishedPlatforms : (quotaResult == null ? void 0 : quotaResult.platforms) || platforms
+    );
+    const skippedPlatformSet = new Set(skippedPlatformIds);
+    const publishedPlatformSet = new Set(publishedPlatformIds);
+    if (typeof Modal !== "function") {
+      const syncIdText = taskId ? `\uFF08\u4EFB\u52A1 ${taskId}\uFF09` : "";
+      const fallbackText = usedFallbackSend ? "\u5F53\u524D\u63D2\u4EF6\u672A\u63D0\u4F9B\u4EFB\u52A1 ID\uFF0C" : "";
+      const quotaText = skippedPlatformIds.length ? `\u5DF2\u8DF3\u8FC7 ${skippedPlatformIds.length} \u4E2A\u8D85\u51FA\u4ECA\u65E5\u989D\u5EA6\u7684\u5E73\u53F0\u3002` : "";
+      new Notice(`\u2705 \u5DF2\u53D1\u9001\u5230\u6D4F\u89C8\u5668\u63D2\u4EF6${syncIdText}\u3002${fallbackText}${quotaText}\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u7684\u5386\u53F2\u6216\u76EE\u6807\u5E73\u53F0\u8349\u7A3F\u7BB1\u67E5\u770B\u7ED3\u679C\u3002`, 1e4);
+      return;
+    }
+    const modal = new Modal(this.app);
+    modal.titleEl.setText("\u5DF2\u53D1\u9001\u5230\u6D4F\u89C8\u5668\u63D2\u4EF6");
+    (_c = (_b = modal.titleEl).addClass) == null ? void 0 : _c.call(_b, "wechat-multiplatform-title");
+    modal.contentEl.addClass("wechat-sync-modal");
+    modal.contentEl.addClass("wechat-multiplatform-modal");
+    modal.contentEl.addClass("wechat-multiplatform-result-modal");
+    (_d = modal.modalEl) == null ? void 0 : _d.addClass("wechat-publish-shell");
+    (_e = modal.modalEl) == null ? void 0 : _e.addClass("wechat-multiplatform-shell");
+    const summary = modal.contentEl.createDiv({
+      cls: `wechat-multiplatform-result-summary ${skippedPlatformIds.length ? "is-warning" : "is-success"}`
+    });
+    const multiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const platformCatalog = getAvailableWechatsyncPlatforms(multiPlatformSettings);
+    const platformById = new Map(platformCatalog.map((platform) => [platform.id, platform]));
+    const sortPlatformItems = (items = [], getId = (item) => item) => {
+      var _a2;
+      return sortWechatsyncPlatformItemsForDisplay(items, {
+        bridgeConnected: ((_a2 = multiPlatformSettings.connection) == null ? void 0 : _a2.status) === "connected",
+        getPlatformId: getId,
+        getPlatform: (item) => {
+          const id = getId(item);
+          return platformById.get(id) || normalizeWechatsyncPlatform(
+            item && typeof item === "object" ? { ...item, id } : { id }
+          ) || { id };
+        }
+      });
+    };
+    const formatPlatformNames = (ids = []) => {
+      const names = sortPlatformItems(parseWechatsyncPlatformIds(ids)).map((id) => {
+        var _a2;
+        return ((_a2 = platformById.get(id)) == null ? void 0 : _a2.name) || id;
+      }).filter(Boolean);
+      return names.length ? names.join("\u3001") : "\u65E0";
+    };
+    summary.createEl("div", {
+      cls: "wechat-multiplatform-result-summary-title",
+      text: skippedPlatformIds.length ? "\u5DF2\u6309\u514D\u8D39\u7248\u989D\u5EA6\u6295\u9012" : "\u4EFB\u52A1\u5DF2\u4EA4\u7ED9\u6D4F\u89C8\u5668\u63D2\u4EF6"
+    });
+    summary.createEl("p", {
+      text: skippedPlatformIds.length ? `\u5DF2\u53D1\u5E03\u5230\uFF1A${formatPlatformNames(publishedPlatformIds)}\u3002\u8DF3\u8FC7 ${skippedPlatformIds.length} \u4E2A\u8D85\u51FA\u4ECA\u65E5\u989D\u5EA6\u7684\u5E73\u53F0\uFF1A${formatPlatformNames(skippedPlatformIds)}\u3002\u5347\u7EA7 Pro \u53EF\u53D1\u5E03\u5230\u5168\u90E8\u5E73\u53F0\u3002` : taskId ? "Obsidian \u5DF2\u5B8C\u6210\u6295\u9012\uFF0C\u4E0D\u4F1A\u957F\u65F6\u95F4\u7B49\u5F85\u6240\u6709\u5E73\u53F0\u5B8C\u6210\u3002\u540E\u7EED\u8349\u7A3F\u94FE\u63A5\u3001\u5931\u8D25\u539F\u56E0\u548C\u91CD\u8BD5\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u4EFB\u52A1\u7A97\u53E3\u91CC\u67E5\u770B\u3002" : "\u5F53\u524D\u63D2\u4EF6\u7248\u672C\u6CA1\u6709\u8FD4\u56DE\u4EFB\u52A1 ID\u3002\u6587\u7AE0\u5DF2\u53D1\u9001\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u5386\u53F2\u8BB0\u5F55\u4E2D\u67E5\u770B\u6700\u8FD1\u4EFB\u52A1\u3002"
+    });
+    const list = modal.contentEl.createDiv({ cls: "wechat-multiplatform-result-list" });
+    const rawTaskPlatforms = Array.isArray(task == null ? void 0 : task.platforms) && task.platforms.length ? task.platforms : (publishedPlatformIds.length ? publishedPlatformIds : platforms).map((id) => ({ id, status: "queued" }));
+    const taskPlatforms = sortPlatformItems(rawTaskPlatforms.filter((item) => {
+      const platformId = parseWechatsyncPlatformIds([(item == null ? void 0 : item.id) || (item == null ? void 0 : item.platform) || item])[0] || "";
+      if (!platformId)
+        return false;
+      if (skippedPlatformSet.has(platformId))
+        return false;
+      if (skippedPlatformSet.size > 0 && publishedPlatformSet.size > 0) {
+        return publishedPlatformSet.has(platformId);
+      }
+      return true;
+    }), (item) => parseWechatsyncPlatformIds([(item == null ? void 0 : item.id) || (item == null ? void 0 : item.platform) || item])[0] || "");
+    if (taskId) {
+      const taskRow = list.createDiv({ cls: "wechat-multiplatform-result-row" });
+      taskRow.createEl("div", { text: "\u4EFB\u52A1", cls: "wechat-multiplatform-result-pill is-success" });
+      const taskBody = taskRow.createDiv({ cls: "wechat-multiplatform-result-body" });
+      taskBody.createEl("div", {
+        text: (task == null ? void 0 : task.found) === false ? "\u63D2\u4EF6\u6682\u672A\u8FD4\u56DE\u4EFB\u52A1\u8BE6\u60C5" : title || (task == null ? void 0 : task.title) || "\u591A\u5E73\u53F0\u53D1\u5E03\u4EFB\u52A1",
+        cls: "wechat-multiplatform-result-name"
+      });
+      if ((task == null ? void 0 : task.found) === false) {
+        taskBody.createEl("div", {
+          text: "\u8BF7\u6253\u5F00\u63D2\u4EF6\u5386\u53F2\u67E5\u770B\u3002",
+          cls: "wechat-multiplatform-result-detail"
+        });
+      }
+    }
+    for (const item of taskPlatforms) {
+      const platformId = String((item == null ? void 0 : item.id) || (item == null ? void 0 : item.platform) || item || "").trim();
+      if (!platformId)
+        continue;
+      const platformName = (item == null ? void 0 : item.name) || ((_f = platformById.get(platformId)) == null ? void 0 : _f.name) || platformId;
+      const row = list.createDiv({ cls: "wechat-multiplatform-result-row" });
+      row.createEl("div", { text: "\u5DF2\u6295\u9012", cls: "wechat-multiplatform-result-pill" });
+      const body = row.createDiv({ cls: "wechat-multiplatform-result-body" });
+      body.createEl("div", { text: platformName, cls: "wechat-multiplatform-result-name" });
+    }
+    for (const platformId of sortPlatformItems(skippedPlatformIds)) {
+      const platformName = ((_g = platformById.get(platformId)) == null ? void 0 : _g.name) || platformId;
+      const row = list.createDiv({ cls: "wechat-multiplatform-result-row is-warning" });
+      row.createEl("div", {
+        text: "\u5DF2\u8DF3\u8FC7",
+        cls: "wechat-multiplatform-result-pill is-warning"
+      });
+      const body = row.createDiv({ cls: "wechat-multiplatform-result-body" });
+      body.createEl("div", { text: platformName, cls: "wechat-multiplatform-result-name" });
+      body.createEl("div", {
+        text: "\u514D\u8D39\u7248\u6BCF\u5929 3 \u4E2A\u5E73\u53F0\u989D\u5EA6\uFF0C\u5F53\u524D\u5E73\u53F0\u672A\u5165\u961F\u3002",
+        cls: "wechat-multiplatform-result-detail"
+      });
+    }
+    const btnRow = modal.contentEl.createDiv({ cls: "wechat-modal-buttons" });
+    if (quotaResult == null ? void 0 : quotaResult.quotaBlocked) {
+      const upgradeBtn = btnRow.createEl("button", { text: "\u5347\u7EA7 Pro" });
+      upgradeBtn.onclick = () => this.openPublisherProPage();
+    }
+    const closeBtn = btnRow.createEl("button", { text: "\u5173\u95ED" });
+    closeBtn.onclick = () => modal.close();
+    if (taskId) {
+      const openBtn = btnRow.createEl("button", { text: "\u67E5\u770B\u4EFB\u52A1", cls: "mod-cta" });
+      openBtn.onclick = () => {
+        this.openWechatsyncTask(taskId);
+      };
+    }
     modal.open();
+  }
+  showMultiPlatformQuotaBlockedModal({ quotaResult = {}, requestedPlatformIds = [] } = {}) {
+    var _a, _b, _c, _d, _e;
+    const { Modal } = require("obsidian");
+    const multiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const platformCatalog = getAvailableWechatsyncPlatforms(multiPlatformSettings);
+    const platformById = new Map(platformCatalog.map((platform) => [platform.id, platform]));
+    const sortPlatformIds = (ids = []) => {
+      var _a2;
+      return sortWechatsyncPlatformItemsForDisplay(parseWechatsyncPlatformIds(ids), {
+        bridgeConnected: ((_a2 = multiPlatformSettings.connection) == null ? void 0 : _a2.status) === "connected",
+        getPlatformId: (id) => id,
+        getPlatform: (id) => platformById.get(id) || { id }
+      });
+    };
+    const skippedPlatformIds = parseWechatsyncPlatformIds(
+      ((_a = quotaResult == null ? void 0 : quotaResult.skippedPlatforms) == null ? void 0 : _a.length) ? quotaResult.skippedPlatforms : requestedPlatformIds
+    );
+    const formatPlatformNames = (ids = []) => {
+      const names = sortPlatformIds(ids).map((id) => {
+        var _a2;
+        return ((_a2 = platformById.get(id)) == null ? void 0 : _a2.name) || id;
+      }).filter(Boolean);
+      return names.length ? names.join("\u3001") : "\u65E0";
+    };
+    const reason = (quotaResult == null ? void 0 : quotaResult.reason) || "";
+    const rawMessage = typeof (quotaResult == null ? void 0 : quotaResult.message) === "string" ? quotaResult.message.trim() : "";
+    const legacyQuotaMessage = /单次最多|每次最多|每天最多发布\s*1\s*次|每天最多\s*1\s*次/.test(rawMessage);
+    const summaryText = rawMessage && !legacyQuotaMessage ? rawMessage : "\u514D\u8D39\u7248\u4ECA\u65E5\u5E73\u53F0\u989D\u5EA6\u4E0D\u8DB3\uFF0C\u660E\u5929 0:00 \u91CD\u7F6E\uFF0C\u6216\u5347\u7EA7 Pro\u3002";
+    if (typeof Modal !== "function") {
+      new Notice(summaryText, 1e4);
+      return;
+    }
+    const modal = new Modal(this.app);
+    modal.titleEl.setText("\u53D1\u5E03\u53D7\u9650");
+    (_c = (_b = modal.titleEl).addClass) == null ? void 0 : _c.call(_b, "wechat-multiplatform-title");
+    modal.contentEl.addClass("wechat-sync-modal");
+    modal.contentEl.addClass("wechat-multiplatform-modal");
+    modal.contentEl.addClass("wechat-multiplatform-result-modal");
+    (_d = modal.modalEl) == null ? void 0 : _d.addClass("wechat-publish-shell");
+    (_e = modal.modalEl) == null ? void 0 : _e.addClass("wechat-multiplatform-shell");
+    const summary = modal.contentEl.createDiv({ cls: "wechat-multiplatform-result-summary is-warning is-quota-blocked" });
+    summary.createEl("div", {
+      cls: "wechat-multiplatform-result-summary-title",
+      text: reason === "daily_limit" ? "\u4ECA\u65E5\u5E73\u53F0\u989D\u5EA6\u4E0D\u8DB3" : "\u514D\u8D39\u7248\u5E73\u53F0\u989D\u5EA6\u4E0D\u8DB3"
+    });
+    summary.createEl("p", { text: summaryText });
+    summary.createEl("div", {
+      text: skippedPlatformIds.length ? `\u672C\u6B21\u672A\u5165\u961F\uFF1A${formatPlatformNames(skippedPlatformIds)}` : "\u672C\u6B21\u672A\u5165\u961F\uFF1A\u6D4F\u89C8\u5668\u63D2\u4EF6\u6CA1\u6709\u8FD4\u56DE\u5E73\u53F0\u660E\u7EC6\u3002",
+      cls: "wechat-multiplatform-result-detail wechat-multiplatform-quota-platforms"
+    });
+    const btnRow = modal.contentEl.createDiv({ cls: "wechat-modal-buttons" });
+    const upgradeBtn = btnRow.createEl("button", { text: "\u5347\u7EA7 Pro", cls: "mod-cta" });
+    upgradeBtn.onclick = () => this.openPublisherProPage();
+    const closeBtn = btnRow.createEl("button", { text: "\u5173\u95ED" });
+    closeBtn.onclick = () => modal.close();
+    modal.open();
+  }
+  showMultiPlatformSyncResultModal({ results = [], requestedPlatformIds = [], fatalError = null } = {}) {
+    var _a, _b, _c, _d, _e, _f;
+    const { Modal } = require("obsidian");
+    if (typeof Modal !== "function") {
+      const message = fatalError ? `\u6D4F\u89C8\u5668\u63D2\u4EF6\u540C\u6B65\u5931\u8D25\uFF1A${fatalError.message || fatalError}` : "\u540C\u6B65\u5B8C\u6210\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u4E2D\u67E5\u770B\u7ED3\u679C";
+      new Notice(message, 1e4);
+      return;
+    }
+    const modal = new Modal(this.app);
+    const mobileSync = isMobileClient(this.app);
+    const bridgeSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const platformCatalog = getAvailableWechatsyncPlatforms(bridgeSettings);
+    const platformById = new Map(platformCatalog.map((platform) => [platform.id, platform]));
+    const {
+      normalizedResults,
+      successCount,
+      failedResults,
+      isAllSuccess
+    } = getMultiPlatformResultSummary(results, requestedPlatformIds, fatalError);
+    modal.titleEl.setText("\u540C\u6B65\u7ED3\u679C");
+    (_b = (_a = modal.titleEl).addClass) == null ? void 0 : _b.call(_a, "wechat-multiplatform-title");
+    modal.contentEl.addClass("wechat-sync-modal");
+    modal.contentEl.addClass("wechat-multiplatform-modal");
+    modal.contentEl.addClass("wechat-multiplatform-result-modal");
+    (_c = modal.modalEl) == null ? void 0 : _c.addClass("wechat-publish-shell");
+    (_d = modal.modalEl) == null ? void 0 : _d.addClass("wechat-multiplatform-shell");
+    if (mobileSync) {
+      modal.contentEl.addClass("wechat-sync-modal-mobile");
+      (_e = modal.modalEl) == null ? void 0 : _e.addClass("wechat-sync-shell-mobile");
+    }
+    const getPlatformName = (result = {}) => {
+      var _a2;
+      const id = getWechatSyncResultPlatformId(result);
+      return result.platformName || result.name || ((_a2 = platformById.get(id)) == null ? void 0 : _a2.name) || id || "\u672A\u77E5\u5E73\u53F0";
+    };
+    const summary = modal.contentEl.createDiv({
+      cls: `wechat-multiplatform-result-summary ${fatalError ? "is-error" : isAllSuccess ? "is-success" : "is-warning"}`
+    });
+    summary.createEl("div", {
+      cls: "wechat-multiplatform-result-summary-title",
+      text: fatalError ? "\u540C\u6B65\u6CA1\u6709\u5B8C\u6210" : isAllSuccess ? "\u8349\u7A3F\u5DF2\u4FDD\u5B58" : "\u90E8\u5206\u5E73\u53F0\u9700\u8981\u5904\u7406"
+    });
+    summary.createEl("p", {
+      text: fatalError ? fatalError.code === "SYNC_TIMEOUT" ? "Obsidian \u6CA1\u6709\u7B49\u5230\u6D4F\u89C8\u5668\u63D2\u4EF6\u7684\u6700\u7EC8\u56DE\u8C03\u3002\u63D2\u4EF6\u53EF\u80FD\u4ECD\u5728\u540E\u53F0\u540C\u6B65\uFF0C\u8BF7\u5148\u67E5\u770B\u63D2\u4EF6\u5386\u53F2\u6216\u76EE\u6807\u5E73\u53F0\u8349\u7A3F\u7BB1\uFF1B\u4E4B\u540E\u53EF\u4EE5\u51CF\u5C11\u5E73\u53F0\u540E\u91CD\u8BD5\u3002" : fatalError.message || "\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u4E2D\u65AD\uFF0C\u8BF7\u68C0\u67E5\u63D2\u4EF6\u3001\u8FDE\u63A5\u4EE4\u724C\u6216\u6D4F\u89C8\u5668\u767B\u5F55\u6001\u540E\u91CD\u8BD5\u3002" : normalizedResults.length > 0 ? `${successCount}/${normalizedResults.length} \u4E2A\u5E73\u53F0\u5DF2\u4FDD\u5B58\u4E3A\u8349\u7A3F\u3002\u6210\u529F\u7684\u5E73\u53F0\u53EF\u4EE5\u76F4\u63A5\u6253\u5F00\u8349\u7A3F\u68C0\u67E5\uFF0C\u5931\u8D25\u7684\u5E73\u53F0\u4FEE\u590D\u540E\u91CD\u65B0\u540C\u6B65\u3002` : "\u8BF7\u6C42\u5DF2\u53D1\u9001\u5230\u6D4F\u89C8\u5668\u63D2\u4EF6\u3002\u82E5\u8FD9\u91CC\u6CA1\u6709\u8FD4\u56DE\u5E73\u53F0\u660E\u7EC6\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u4E2D\u67E5\u770B\u7ED3\u679C\u3002"
+    });
+    const list = modal.contentEl.createDiv({ cls: "wechat-multiplatform-result-list" });
+    if (fatalError) {
+      const row = list.createDiv({ cls: "wechat-multiplatform-result-row is-error" });
+      const body = row.createDiv({ cls: "wechat-multiplatform-result-body" });
+      body.createEl("div", { text: "\u6D4F\u89C8\u5668\u63D2\u4EF6\u53D1\u5E03", cls: "wechat-multiplatform-result-name" });
+      body.createEl("div", {
+        text: fatalError.code === "SYNC_TIMEOUT" ? "\u540C\u6B65\u8BF7\u6C42\u5DF2\u8D85\u65F6\uFF0C\u6682\u65F6\u65E0\u6CD5\u62FF\u5230\u9010\u5E73\u53F0\u8FDB\u5EA6\u3002\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u4FA7\u786E\u8BA4\u662F\u5426\u5DF2\u7ECF\u751F\u6210\u8349\u7A3F\u3002" : fatalError.message || "\u8FDE\u63A5\u4E0D\u53EF\u7528",
+        cls: "wechat-multiplatform-result-detail"
+      });
+    } else if (normalizedResults.length === 0) {
+      const row = list.createDiv({ cls: "wechat-multiplatform-result-row" });
+      const body = row.createDiv({ cls: "wechat-multiplatform-result-body" });
+      body.createEl("div", { text: "\u7B49\u5F85\u63D2\u4EF6\u7ED3\u679C", cls: "wechat-multiplatform-result-name" });
+      body.createEl("div", {
+        text: "\u5F53\u524D\u8FDE\u63A5\u6CA1\u6709\u8FD4\u56DE\u5E73\u53F0\u660E\u7EC6\u3002\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u4FA7\u786E\u8BA4\u8349\u7A3F\u662F\u5426\u5DF2\u751F\u6210\u3002",
+        cls: "wechat-multiplatform-result-detail"
+      });
+    } else {
+      const sortedResults = sortWechatsyncPlatformItemsForDisplay(normalizedResults, {
+        bridgeConnected: ((_f = bridgeSettings.connection) == null ? void 0 : _f.status) === "connected",
+        getPlatformId: (result) => getWechatSyncResultPlatformId(result),
+        getPlatform: (result) => {
+          const id = getWechatSyncResultPlatformId(result);
+          return platformById.get(id) || normalizeWechatsyncPlatform({ ...result, id }) || { id };
+        }
+      });
+      for (const result of sortedResults) {
+        const draftUrl = getWechatSyncResultUrl(result);
+        const errorMessage = getWechatSyncResultError(result);
+        const isSuccess = (result == null ? void 0 : result.success) === true;
+        const row = list.createDiv({
+          cls: `wechat-multiplatform-result-row ${isSuccess ? "is-success" : "is-error"}`
+        });
+        row.createEl("div", {
+          text: isSuccess ? "\u6210\u529F" : "\u5931\u8D25",
+          cls: `wechat-multiplatform-result-pill ${isSuccess ? "is-success" : "is-error"}`
+        });
+        const body = row.createDiv({ cls: "wechat-multiplatform-result-body" });
+        body.createEl("div", {
+          text: getPlatformName(result),
+          cls: "wechat-multiplatform-result-name"
+        });
+        body.createEl("div", {
+          text: isSuccess ? draftUrl ? "\u5DF2\u4FDD\u5B58\u4E3A\u8349\u7A3F\uFF0C\u8BF7\u6253\u5F00\u540E\u68C0\u67E5\u6392\u7248\u5E76\u624B\u52A8\u53D1\u5E03\u3002" : "\u5DF2\u540C\u6B65\u6210\u529F\uFF0C\u8BF7\u5728\u6D4F\u89C8\u5668\u63D2\u4EF6\u4E2D\u67E5\u770B\u8349\u7A3F\u3002" : errorMessage || "\u540C\u6B65\u5931\u8D25\uFF0C\u8BF7\u4FEE\u590D\u540E\u91CD\u8BD5\u3002",
+          cls: "wechat-multiplatform-result-detail"
+        });
+        if (isSuccess && draftUrl) {
+          const openBtn = row.createEl("button", {
+            text: "\u6253\u5F00\u8349\u7A3F",
+            cls: "wechat-multiplatform-inline-btn"
+          });
+          openBtn.onclick = () => this.openExternalUrl(draftUrl);
+        }
+      }
+    }
+    const btnRow = modal.contentEl.createDiv({ cls: "wechat-modal-buttons" });
+    if (fatalError || failedResults.length > 0) {
+      const retryBtn = btnRow.createEl("button", { text: "\u91CD\u65B0\u9009\u62E9\u5E73\u53F0" });
+      retryBtn.onclick = () => {
+        modal.close();
+        this.showMultiPlatformSyncModal();
+      };
+    }
+    const closeBtn = btnRow.createEl("button", {
+      text: isAllSuccess ? "\u5B8C\u6210" : "\u5173\u95ED",
+      cls: "mod-cta"
+    });
+    closeBtn.onclick = () => modal.close();
+    modal.open();
+  }
+  async showMultiPlatformSyncModal(options = {}) {
+    return showMultiPlatformPublishModal(this, options);
   }
   /**
    * 处理同步到微信逻辑
@@ -14921,15 +19122,32 @@ var AppleStyleView = class extends ItemView {
     this.previewContainer.empty();
     this.previewContainer.removeClass("apple-has-content");
     const placeholder = this.previewContainer.createEl("div", { cls: "apple-placeholder" });
-    placeholder.createEl("div", { cls: "apple-placeholder-icon", text: "\u{1F4DD}" });
-    placeholder.createEl("h2", { text: "\u5FAE\u4FE1\u516C\u4F17\u53F7\u6392\u7248\u8F6C\u6362\u5668" });
-    placeholder.createEl("p", { text: "\u5C06 Markdown \u8F6C\u6362\u4E3A\u7CBE\u7F8E\u7684 HTML\uFF0C\u4E00\u952E\u540C\u6B65\u5230\u8349\u7A3F\u7BB1" });
+    const iconDiv = placeholder.createEl("div", { cls: "apple-placeholder-icon" });
+    try {
+      const path = require("path");
+      const fs = require("fs");
+      const vaultPath = this.app.vault.adapter.basePath;
+      const configDir = this.app.vault.configDir;
+      const imgPath = path.join(vaultPath, configDir, "plugins", "obsidian-wechat-converter", "images", "icon.png");
+      const imgBuffer = fs.readFileSync(imgPath);
+      const base64 = imgBuffer.toString("base64");
+      const img = iconDiv.createEl("img", { attr: { alt: "Obsidian \u53D1\u5E03\u52A9\u624B" } });
+      img.src = "data:image/png;base64," + base64;
+      img.style.width = "64px";
+      img.style.height = "64px";
+      img.style.display = "block";
+    } catch (e) {
+      iconDiv.textContent = "\u{1F4DD}";
+      console.error("Failed to load brand icon:", e);
+    }
+    placeholder.createEl("h2", { text: "Obsidian \u53D1\u5E03\u52A9\u624B" });
+    placeholder.createEl("p", { text: "\u5728 Obsidian \u5199\u4F5C\uFF0C\u9884\u89C8\u786E\u8BA4\u516C\u4F17\u53F7\u6392\u7248\uFF0C\u6216\u76F4\u63A5\u4EE5 Markdown \u539F\u6587\u53D1\u5E03\u5230\u5176\u4ED6\u5E73\u53F0\u3002" });
     const steps = placeholder.createEl("div", { cls: "apple-steps" });
-    steps.createEl("div", { text: "1\uFE0F\u20E3 \u6253\u5F00\u9700\u8981\u8F6C\u6362\u7684 Markdown \u6587\u4EF6" });
-    steps.createEl("div", { text: "2\uFE0F\u20E3 \u9884\u89C8\u533A\u4F1A\u81EA\u52A8\u663E\u793A\u8F6C\u6362\u6548\u679C" });
-    steps.createEl("div", { text: "3\uFE0F\u20E3 \u70B9\u51FB\u300C\u4E00\u952E\u540C\u6B65\u5230\u8349\u7A3F\u7BB1\u300D\u5373\u53EF\u53D1\u9001" });
-    const note = placeholder.createEl("p", {
-      text: "\u6CE8\u610F\uFF1A\u5982\u5F53\u524D\u5DF2\u6253\u5F00\u6587\u6863\u4F46\u672A\u663E\u793A\uFF0C\u8BF7\u91CD\u65B0\u70B9\u51FB\u4E00\u4E0B\u6587\u6863\u5373\u53EF\u89E6\u53D1",
+    steps.createEl("div", { text: "1\uFE0F\u20E3 \u6253\u5F00\u8981\u53D1\u5E03\u7684 Markdown \u6587\u4EF6" });
+    steps.createEl("div", { text: "2\uFE0F\u20E3 \u5728\u9884\u89C8\u4E2D\u786E\u8BA4\u5FAE\u4FE1\u516C\u4F17\u53F7\u6392\u7248" });
+    steps.createEl("div", { text: "3\uFE0F\u20E3 \u70B9\u51FB\u300C\u53D1\u5E03\u4E0E\u5206\u53D1\u300D\u9009\u62E9\u5FAE\u4FE1\u6216\u5176\u4ED6\u5E73\u53F0" });
+    placeholder.createEl("p", {
+      text: "\u63D0\u793A\uFF1A\u70B9\u51FB\u8981\u53D1\u5E03\u7684\u6587\u6863\u5373\u53EF\u5728\u9884\u89C8\u4E2D\u67E5\u770B\u6392\u7248\u6548\u679C\u3002",
       cls: "apple-placeholder-note"
     });
   }
@@ -15217,6 +19435,152 @@ var AppleStyleView = class extends ItemView {
     await this.enhanceHtmlForWechatPublishing(tempDiv);
     return tempDiv.innerHTML;
   }
+  async prepareHtmlForWechatsyncArticle(html) {
+    const tempDiv = document.createElement("div");
+    tempDiv.innerHTML = html || "";
+    await this.processImagesToDataURL(tempDiv);
+    this.transformCodeBlocksForWechatsync(tempDiv);
+    return tempDiv.innerHTML;
+  }
+  // Bridge publish flow only. Unlike prepareHtmlForWechatsyncArticle (which
+  // inlines local images as data: URLs for the legacy WeChat clipboard
+  // flow), the bridge protocol carries image bytes via assets[] separately.
+  // Inlining base64 here would double-encode every local image: once into
+  // assets[] (correct), once into content[] (~33% inflated). The latter
+  // also breaks retry, because the extension has to redact base64 before
+  // persisting history (storage quota), and a redacted data: URL cannot be
+  // re-published. So: rewrite app:// img srcs back to asset://<id> using
+  // the assets[] metadata resolveArticleImages already produced. Do NOT
+  // call processImagesToDataURL.
+  async prepareHtmlForWechatsyncArticleViaBridge(html, assets = []) {
+    const mapped = mapAppUrlImagesToAssetUrls(html || "", assets);
+    const tempDiv = document.createElement("div");
+    tempDiv.innerHTML = mapped;
+    this.transformCodeBlocksForWechatsync(tempDiv);
+    return tempDiv.innerHTML;
+  }
+  // Bridge publish flow: produce a small inline JPEG data URL for the
+  // cover asset, suitable for direct <img src> use in the extension's
+  // popup History list (which cannot resolve asset:// URLs in plain DOM).
+  // Budget: longest edge ≤ COVER_THUMBNAIL_MAX_DIM (256px), JPEG quality
+  // tries 0.7 → 0.55 → 0.4 until size ≤ COVER_THUMBNAIL_MAX_BYTES (~8KB).
+  // Returns '' on any failure — the extension will fall back to its own
+  // local-thumbnail path. Never throws into the publish pipeline.
+  async generateCoverThumbnailFromAsset(asset) {
+    try {
+      if (!asset || typeof asset !== "object")
+        return "";
+      const base64 = typeof asset.base64 === "string" ? asset.base64 : "";
+      const mimeType = typeof asset.mimeType === "string" ? asset.mimeType : "";
+      if (!base64 || !mimeType)
+        return "";
+      if (mimeType === "image/gif")
+        return "";
+      const sourceDataUrl = `data:${mimeType};base64,${base64}`;
+      const image = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error("image_decode_failed"));
+        img.src = sourceDataUrl;
+      });
+      const naturalW = image.naturalWidth || image.width || 0;
+      const naturalH = image.naturalHeight || image.height || 0;
+      if (!naturalW || !naturalH)
+        return "";
+      const MAX_DIM = 256;
+      const scale = Math.min(1, MAX_DIM / Math.max(naturalW, naturalH));
+      const targetW = Math.max(1, Math.round(naturalW * scale));
+      const targetH = Math.max(1, Math.round(naturalH * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext("2d");
+      if (!ctx)
+        return "";
+      ctx.drawImage(image, 0, 0, targetW, targetH);
+      const MAX_BYTES = 8 * 1024;
+      for (const quality of [0.7, 0.55, 0.4]) {
+        const dataUrl = canvas.toDataURL("image/jpeg", quality);
+        if (typeof dataUrl === "string" && dataUrl.length <= MAX_BYTES) {
+          return dataUrl;
+        }
+      }
+      return "";
+    } catch (err) {
+      console.warn("[Wechatsync] generateCoverThumbnailFromAsset failed", err);
+      return "";
+    }
+  }
+  extractCodeTextForWechatsync(block) {
+    var _a;
+    const codePre = (_a = block == null ? void 0 : block.querySelector) == null ? void 0 : _a.call(block, "pre");
+    if (!codePre)
+      return "";
+    const sectionNodes = Array.from(codePre.querySelectorAll("section"));
+    const codeLinesNode = sectionNodes.filter((node) => {
+      const style = (node.getAttribute("style") || "").toLowerCase();
+      return style.includes("white-space:nowrap") || style.includes("white-space: nowrap");
+    }).sort((a, b) => {
+      const score = (node) => {
+        const html = node.innerHTML || "";
+        return (html.includes("<br") ? 1e4 : 0) + (node.textContent || "").length;
+      };
+      return score(b) - score(a);
+    })[0];
+    if (codeLinesNode) {
+      const scratch = document.createElement("div");
+      return (codeLinesNode.innerHTML || "").split(/<br\s*\/?>/i).map((lineHtml) => {
+        scratch.innerHTML = lineHtml || "";
+        return (scratch.textContent || "").replace(/\u00a0/g, " ");
+      }).join("\n");
+    }
+    const codeEl = codePre.querySelector("code");
+    return ((codeEl ? codeEl.textContent : codePre.textContent) || "").replace(/\u00a0/g, " ");
+  }
+  transformCodeBlocksForWechatsync(root) {
+    if (!root)
+      return;
+    const codeBlocks = Array.from(root.querySelectorAll(".code-snippet__fix"));
+    codeBlocks.forEach((block) => {
+      const codeText = this.extractCodeTextForWechatsync(block);
+      const pre = document.createElement("pre");
+      pre.setAttribute("style", [
+        "display:block !important",
+        "width:100% !important",
+        "max-width:100% !important",
+        "margin:14px 0 !important",
+        "padding:12px 14px !important",
+        "box-sizing:border-box !important",
+        "background:#f6f8fa !important",
+        "border:1px solid #e5e7eb !important",
+        "border-radius:8px !important",
+        "overflow-x:auto !important",
+        "overflow-y:hidden !important",
+        "-webkit-overflow-scrolling:touch !important",
+        "font-family:'SF Mono',Consolas,Monaco,monospace !important",
+        "font-size:13px !important",
+        "line-height:1.65 !important",
+        "color:#24292f !important",
+        "text-indent:0 !important",
+        "white-space:pre !important"
+      ].join(";"));
+      const code = document.createElement("code");
+      code.setAttribute("style", [
+        "display:block !important",
+        "margin:0 !important",
+        "padding:0 !important",
+        "background:transparent !important",
+        "color:#24292f !important",
+        "font:inherit !important",
+        "line-height:inherit !important",
+        "white-space:pre !important",
+        "text-indent:0 !important"
+      ].join(";"));
+      code.textContent = codeText;
+      pre.appendChild(code);
+      block.replaceWith(pre);
+    });
+  }
   transformCodeBlocksForClipboard(root) {
     if (!root)
       return;
@@ -15364,7 +19728,7 @@ var AppleStyleView = class extends ItemView {
       return;
     } catch (error) {
       console.error("\u590D\u5236\u5931\u8D25:", error);
-      new Notice("\u274C \u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u4F7F\u7528\u300C\u4E00\u952E\u540C\u6B65\u5230\u8349\u7A3F\u7BB1\u300D\u53D1\u9001\u6587\u7AE0");
+      new Notice("\u274C \u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u4F7F\u7528\u300C\u53D1\u5E03\u4E0E\u5206\u53D1\u300D\u53D1\u9001\u6587\u7AE0");
       if (this.copyBtn) {
         this.copyBtn.classList.remove("is-copying");
         this.setCopyButtonIcon("copy");
@@ -15490,7 +19854,7 @@ var AppleStyleView = class extends ItemView {
     if (this.mermaidImageCache) {
       this.mermaidImageCache.clear();
     }
-    console.log("\u{1F34E} \u8F6C\u6362\u5668\u9762\u677F\u5DF2\u5173\u95ED");
+    console.log("\u{1F34E} \u53D1\u5E03\u52A9\u624B\u9762\u677F\u5DF2\u5173\u95ED");
   }
   /**
    * 简单的字符串哈希函数 (DJB2算法)
@@ -15527,189 +19891,212 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new Setting(containerEl).setDesc("\u66F4\u591A\u6392\u7248\u6837\u5F0F\u9009\u9879\uFF08\u4E3B\u9898\u3001\u5B57\u53F7\u3001\u4EE3\u7801\u5757\u7B49\uFF09\u8BF7\u5728\u63D2\u4EF6\u4FA7\u8FB9\u680F\u9762\u677F\u4E2D\u8FDB\u884C\u8BBE\u7F6E\u3002");
-    new Setting(containerEl).setName("\u9884\u89C8\u6A21\u5F0F").setHeading();
-    new Setting(containerEl).setName("\u4F7F\u7528\u624B\u673A\u4EFF\u771F\u6846").setDesc("\u5F00\u542F\u540E\uFF0C\u9884\u89C8\u533A\u57DF\u5C06\u663E\u793A\u4E3A iPhone X \u624B\u673A\u6846\u6837\u5F0F\uFF1B\u5173\u95ED\u5219\u6062\u590D\u4E3A\u7ECF\u5178\u5168\u5BBD\u9884\u89C8\u6A21\u5F0F\uFF08\u9700\u91CD\u542F\u63D2\u4EF6\u9762\u677F\u751F\u6548\uFF09").addToggle((toggle) => toggle.setValue(this.plugin.settings.usePhoneFrame).onChange(async (value) => {
-      this.plugin.settings.usePhoneFrame = value;
-      await this.plugin.saveSettings();
-      new Notice("\u8BBE\u7F6E\u5DF2\u4FDD\u5B58\uFF0C\u8BF7\u5173\u95ED\u5E76\u91CD\u65B0\u6253\u5F00\u8F6C\u6362\u5668\u9762\u677F\u4EE5\u751F\u6548");
-    }));
-    new Setting(containerEl).setName("\u56FE\u7247\u6C34\u5370").setHeading();
-    new Setting(containerEl).setName("\u542F\u7528\u56FE\u7247\u6C34\u5370").setDesc("\u5728\u6BCF\u5F20\u56FE\u7247\u4E0A\u65B9\u663E\u793A\u5934\u50CF\uFF08\u9700\u91CD\u542F\u63D2\u4EF6\u9762\u677F\u751F\u6548\uFF09").addToggle((toggle) => toggle.setValue(this.plugin.settings.enableWatermark).onChange(async (value) => {
-      this.plugin.settings.enableWatermark = value;
-      await this.plugin.saveSettings();
-      new Notice("\u8BBE\u7F6E\u5DF2\u4FDD\u5B58\uFF0C\u8BF7\u5173\u95ED\u5E76\u91CD\u65B0\u6253\u5F00\u8F6C\u6362\u5668\u9762\u677F\u4EE5\u751F\u6548");
-    }));
-    const uploadSetting = new Setting(containerEl).setName("\u4E0A\u4F20\u672C\u5730\u5934\u50CF").setDesc(this.plugin.settings.avatarBase64 ? "\u2705 \u5DF2\u4E0A\u4F20\u672C\u5730\u5934\u50CF\uFF08\u4F18\u5148\u4F7F\u7528\uFF09" : "\u9009\u62E9\u672C\u5730\u56FE\u7247\uFF0C\u8F6C\u6362\u4E3A Base64 \u5B58\u50A8\uFF0C\u65E0\u9700\u7F51\u7EDC\u8BF7\u6C42");
-    uploadSetting.addButton((button) => button.setButtonText(this.plugin.settings.avatarBase64 ? "\u91CD\u65B0\u4E0A\u4F20" : "\u9009\u62E9\u56FE\u7247").onClick(() => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = "image/*";
-      input.onchange = async (e) => {
-        const file = e.target.files[0];
-        if (!file)
-          return;
-        if (file.size > 100 * 1024) {
-          new Notice("\u274C \u56FE\u7247\u592A\u5927\uFF0C\u8BF7\u9009\u62E9\u5C0F\u4E8E 100KB \u7684\u56FE\u7247");
-          return;
-        }
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-          this.plugin.settings.avatarBase64 = event.target.result;
-          await this.plugin.saveSettings();
-          new Notice("\u2705 \u5934\u50CF\u5DF2\u4E0A\u4F20");
-          this.display();
-        };
-        reader.readAsDataURL(file);
-      };
-      input.click();
-    }));
-    if (this.plugin.settings.avatarBase64) {
-      uploadSetting.addButton((button) => button.setButtonText("\u6E05\u9664").setWarning().onClick(async () => {
-        this.plugin.settings.avatarBase64 = "";
-        await this.plugin.saveSettings();
-        new Notice("\u5DF2\u6E05\u9664\u672C\u5730\u5934\u50CF");
-        this.display();
-      }));
+    new Setting(containerEl).setDesc("\u5728 Obsidian \u4E2D\u5B8C\u6210\u5199\u4F5C\u4E0E\u9884\u89C8\uFF1B\u5FAE\u4FE1\u8D26\u53F7\u3001\u6D4F\u89C8\u5668\u63D2\u4EF6\u53D1\u5E03\u548C\u9ED8\u8BA4\u53D1\u5E03\u9009\u9879\u5728\u8FD9\u91CC\u914D\u7F6E\u3002\u66F4\u591A\u6392\u7248\u6837\u5F0F\u8BF7\u5728\u4FA7\u8FB9\u680F\u9762\u677F\u4E2D\u8C03\u6574\u3002");
+    const tabBar = containerEl.createDiv({ cls: "apple-settings-tabs" });
+    const wechatTab = tabBar.createDiv({ cls: "apple-settings-tab active", text: "\u5FAE\u4FE1" });
+    const multiTab = tabBar.createDiv({ cls: "apple-settings-tab", text: MULTI_PLATFORM_TAB_LABEL });
+    const wechatContent = containerEl.createDiv({ cls: "apple-settings-tab-content" });
+    const multiContent = containerEl.createDiv({ cls: "apple-settings-tab-content" });
+    multiContent.style.display = "none";
+    wechatTab.onclick = () => {
+      this._activeSettingsTab = "wechat";
+      wechatTab.addClass("active");
+      multiTab.removeClass("active");
+      wechatContent.style.display = "";
+      multiContent.style.display = "none";
+    };
+    multiTab.onclick = () => {
+      this._activeSettingsTab = "multi";
+      multiTab.addClass("active");
+      wechatTab.removeClass("active");
+      wechatContent.style.display = "none";
+      multiContent.style.display = "";
+    };
+    if (this._activeSettingsTab === "multi") {
+      multiTab.onclick();
     }
-    new Setting(containerEl).setName("\u5934\u50CF URL\uFF08\u5907\u7528\uFF09").setDesc("\u5982\u672A\u4E0A\u4F20\u672C\u5730\u5934\u50CF\uFF0C\u5C06\u4F7F\u7528\u6B64 URL").addText((text) => text.setPlaceholder("https://example.com/avatar.jpg").setValue(this.plugin.settings.avatarUrl).onChange(async (value) => {
-      this.plugin.settings.avatarUrl = value;
-      await this.plugin.saveSettings();
-    }));
-    new Setting(containerEl).setName("\u5FAE\u4FE1\u516C\u4F17\u53F7\u8D26\u53F7").setDesc("\u8BF7\u5728\u5FAE\u4FE1\u516C\u4F17\u53F7\u540E\u53F0 [\u8BBE\u7F6E\u4E0E\u5F00\u53D1] -> [\u57FA\u672C\u914D\u7F6E] \u4E2D\u83B7\u53D6 AppID \u548C AppSecret\uFF0C\u5E76\u786E\u4FDD\u5DF2\u5C06\u5F53\u524D IP \u52A0\u5165\u767D\u540D\u5355\u3002").setHeading();
-    const accounts = this.plugin.settings.wechatAccounts || [];
-    const defaultId = this.plugin.settings.defaultAccountId;
-    if (accounts.length === 0) {
-      containerEl.createEl("p", {
-        text: "\u6682\u65E0\u8D26\u53F7\uFF0C\u8BF7\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\u6DFB\u52A0",
-        cls: "setting-item-description",
-        attr: { style: "color: var(--text-muted); font-style: italic;" }
-      });
-    } else {
-      const listContainer = containerEl.createDiv({ cls: "wechat-account-list" });
-      for (const account of accounts) {
-        const isDefault = account.id === defaultId;
-        const card = listContainer.createDiv({ cls: "wechat-account-card" });
-        const info = card.createDiv({ cls: "wechat-account-info" });
-        const nameRow = info.createDiv({ cls: "wechat-account-name-row" });
-        nameRow.createSpan({ text: account.name, cls: "wechat-account-name" });
-        if (isDefault) {
-          nameRow.createSpan({ text: "\u9ED8\u8BA4", cls: "wechat-account-badge" });
-        }
-        info.createDiv({
-          text: `AppID: ${account.appId.substring(0, 8)}...`,
-          cls: "wechat-account-appid"
-        });
-        const actions = card.createDiv({ cls: "wechat-account-actions" });
-        if (!isDefault) {
-          const defaultBtn = actions.createEl("button", { text: "\u8BBE\u4E3A\u9ED8\u8BA4", cls: "wechat-btn-small" });
-          defaultBtn.onclick = async () => {
-            this.plugin.settings.defaultAccountId = account.id;
+    {
+      const containerEl2 = wechatContent;
+      new Setting(containerEl2).setName("\u9884\u89C8\u6A21\u5F0F").setHeading();
+      new Setting(containerEl2).setName("\u4F7F\u7528\u624B\u673A\u4EFF\u771F\u6846").setDesc("\u5F00\u542F\u540E\uFF0C\u9884\u89C8\u533A\u57DF\u5C06\u663E\u793A\u4E3A iPhone X \u624B\u673A\u6846\u6837\u5F0F\uFF1B\u5173\u95ED\u5219\u6062\u590D\u4E3A\u7ECF\u5178\u5168\u5BBD\u9884\u89C8\u6A21\u5F0F\uFF08\u9700\u91CD\u542F\u63D2\u4EF6\u9762\u677F\u751F\u6548\uFF09").addToggle((toggle) => toggle.setValue(this.plugin.settings.usePhoneFrame).onChange(async (value) => {
+        this.plugin.settings.usePhoneFrame = value;
+        await this.plugin.saveSettings();
+        new Notice("\u8BBE\u7F6E\u5DF2\u4FDD\u5B58\uFF0C\u8BF7\u5173\u95ED\u5E76\u91CD\u65B0\u6253\u5F00\u53D1\u5E03\u52A9\u624B\u9762\u677F\u4EE5\u751F\u6548");
+      }));
+      new Setting(containerEl2).setName("\u56FE\u7247\u6C34\u5370").setHeading();
+      new Setting(containerEl2).setName("\u542F\u7528\u56FE\u7247\u6C34\u5370").setDesc("\u5728\u6BCF\u5F20\u56FE\u7247\u4E0A\u65B9\u663E\u793A\u5934\u50CF\uFF08\u9700\u91CD\u542F\u63D2\u4EF6\u9762\u677F\u751F\u6548\uFF09").addToggle((toggle) => toggle.setValue(this.plugin.settings.enableWatermark).onChange(async (value) => {
+        this.plugin.settings.enableWatermark = value;
+        await this.plugin.saveSettings();
+        new Notice("\u8BBE\u7F6E\u5DF2\u4FDD\u5B58\uFF0C\u8BF7\u5173\u95ED\u5E76\u91CD\u65B0\u6253\u5F00\u53D1\u5E03\u52A9\u624B\u9762\u677F\u4EE5\u751F\u6548");
+      }));
+      const uploadSetting = new Setting(containerEl2).setName("\u4E0A\u4F20\u672C\u5730\u5934\u50CF").setDesc(this.plugin.settings.avatarBase64 ? "\u2705 \u5DF2\u4E0A\u4F20\u672C\u5730\u5934\u50CF\uFF08\u4F18\u5148\u4F7F\u7528\uFF09" : "\u9009\u62E9\u672C\u5730\u56FE\u7247\uFF0C\u8F6C\u6362\u4E3A Base64 \u5B58\u50A8\uFF0C\u65E0\u9700\u7F51\u7EDC\u8BF7\u6C42");
+      uploadSetting.addButton((button) => button.setButtonText(this.plugin.settings.avatarBase64 ? "\u91CD\u65B0\u4E0A\u4F20" : "\u9009\u62E9\u56FE\u7247").onClick(() => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = "image/*";
+        input.onchange = async (e) => {
+          const file = e.target.files[0];
+          if (!file)
+            return;
+          if (file.size > 100 * 1024) {
+            new Notice("\u274C \u56FE\u7247\u592A\u5927\uFF0C\u8BF7\u9009\u62E9\u5C0F\u4E8E 100KB \u7684\u56FE\u7247");
+            return;
+          }
+          const reader = new FileReader();
+          reader.onload = async (event) => {
+            this.plugin.settings.avatarBase64 = event.target.result;
             await this.plugin.saveSettings();
+            new Notice("\u2705 \u5934\u50CF\u5DF2\u4E0A\u4F20");
             this.display();
           };
-        }
-        const editBtn = actions.createEl("button", { text: "\u7F16\u8F91", cls: "wechat-btn-small" });
-        editBtn.onclick = () => this.showEditAccountModal(account);
-        const testBtn = actions.createEl("button", { text: "\u6D4B\u8BD5", cls: "wechat-btn-small wechat-btn-test" });
-        testBtn.onclick = async () => {
-          testBtn.disabled = true;
-          testBtn.textContent = "\u6D4B\u8BD5\u4E2D...";
-          try {
-            const api = new WechatAPI(account.appId, account.appSecret, this.plugin.settings.proxyUrl);
-            await api.getAccessToken();
-            new Notice(`\u2705 ${account.name} \u8FDE\u63A5\u6210\u529F\uFF01`);
-          } catch (err) {
-            new Notice(`\u274C ${account.name} \u8FDE\u63A5\u5931\u8D25: ${err.message}`);
-          }
-          testBtn.disabled = false;
-          testBtn.textContent = "\u6D4B\u8BD5";
+          reader.readAsDataURL(file);
         };
-        const deleteBtn = actions.createEl("button", { text: "\u5220\u9664", cls: "wechat-btn-small wechat-btn-danger" });
-        deleteBtn.onclick = async () => {
-          if (confirm(`\u786E\u5B9A\u8981\u5220\u9664\u8D26\u53F7 "${account.name}" \u5417\uFF1F`)) {
-            this.plugin.settings.wechatAccounts = accounts.filter((a) => a.id !== account.id);
-            if (account.id === defaultId && this.plugin.settings.wechatAccounts.length > 0) {
-              this.plugin.settings.defaultAccountId = this.plugin.settings.wechatAccounts[0].id;
-            } else if (this.plugin.settings.wechatAccounts.length === 0) {
-              this.plugin.settings.defaultAccountId = "";
+        input.click();
+      }));
+      if (this.plugin.settings.avatarBase64) {
+        uploadSetting.addButton((button) => button.setButtonText("\u6E05\u9664").setWarning().onClick(async () => {
+          this.plugin.settings.avatarBase64 = "";
+          await this.plugin.saveSettings();
+          new Notice("\u5DF2\u6E05\u9664\u672C\u5730\u5934\u50CF");
+          this.display();
+        }));
+      }
+      new Setting(containerEl2).setName("\u5934\u50CF URL\uFF08\u5907\u7528\uFF09").setDesc("\u5982\u672A\u4E0A\u4F20\u672C\u5730\u5934\u50CF\uFF0C\u5C06\u4F7F\u7528\u6B64 URL").addText((text) => text.setPlaceholder("https://example.com/avatar.jpg").setValue(this.plugin.settings.avatarUrl).onChange(async (value) => {
+        this.plugin.settings.avatarUrl = value;
+        await this.plugin.saveSettings();
+      }));
+      new Setting(containerEl2).setName("\u5FAE\u4FE1\u516C\u4F17\u53F7\u8D26\u53F7").setDesc("\u8BF7\u5728\u5FAE\u4FE1\u516C\u4F17\u53F7\u540E\u53F0 [\u8BBE\u7F6E\u4E0E\u5F00\u53D1] -> [\u57FA\u672C\u914D\u7F6E] \u4E2D\u83B7\u53D6 AppID \u548C AppSecret\uFF0C\u5E76\u786E\u4FDD\u5DF2\u5C06\u5F53\u524D IP \u52A0\u5165\u767D\u540D\u5355\u3002").setHeading();
+      const accounts = this.plugin.settings.wechatAccounts || [];
+      const defaultId = this.plugin.settings.defaultAccountId;
+      if (accounts.length === 0) {
+        containerEl2.createEl("p", {
+          text: "\u6682\u65E0\u8D26\u53F7\uFF0C\u8BF7\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\u6DFB\u52A0",
+          cls: "setting-item-description",
+          attr: { style: "color: var(--text-muted); font-style: italic;" }
+        });
+      } else {
+        const listContainer = containerEl2.createDiv({ cls: "wechat-account-list" });
+        for (const account of accounts) {
+          const isDefault = account.id === defaultId;
+          const card = listContainer.createDiv({ cls: "wechat-account-card" });
+          const info = card.createDiv({ cls: "wechat-account-info" });
+          const nameRow = info.createDiv({ cls: "wechat-account-name-row" });
+          nameRow.createSpan({ text: account.name, cls: "wechat-account-name" });
+          if (isDefault) {
+            nameRow.createSpan({ text: "\u9ED8\u8BA4", cls: "wechat-account-badge" });
+          }
+          info.createDiv({
+            text: `AppID: ${account.appId.substring(0, 8)}...`,
+            cls: "wechat-account-appid"
+          });
+          const actions = card.createDiv({ cls: "wechat-account-actions" });
+          if (!isDefault) {
+            const defaultBtn = actions.createEl("button", { text: "\u8BBE\u4E3A\u9ED8\u8BA4", cls: "wechat-btn-small" });
+            defaultBtn.onclick = async () => {
+              this.plugin.settings.defaultAccountId = account.id;
+              await this.plugin.saveSettings();
+              this.display();
+            };
+          }
+          const editBtn = actions.createEl("button", { text: "\u7F16\u8F91", cls: "wechat-btn-small" });
+          editBtn.onclick = () => this.showEditAccountModal(account);
+          const testBtn = actions.createEl("button", { text: "\u6D4B\u8BD5", cls: "wechat-btn-small wechat-btn-test" });
+          testBtn.onclick = async () => {
+            testBtn.disabled = true;
+            testBtn.textContent = "\u6D4B\u8BD5\u4E2D...";
+            try {
+              const api = new WechatAPI(account.appId, account.appSecret, this.plugin.settings.proxyUrl);
+              await api.getAccessToken();
+              new Notice(`\u2705 ${account.name} \u8FDE\u63A5\u6210\u529F\uFF01`);
+            } catch (err) {
+              new Notice(`\u274C ${account.name} \u8FDE\u63A5\u5931\u8D25: ${err.message}`);
             }
-            await this.plugin.saveSettings();
-            this.display();
+            testBtn.disabled = false;
+            testBtn.textContent = "\u6D4B\u8BD5";
+          };
+          const deleteBtn = actions.createEl("button", { text: "\u5220\u9664", cls: "wechat-btn-small wechat-btn-danger" });
+          deleteBtn.onclick = async () => {
+            if (confirm(`\u786E\u5B9A\u8981\u5220\u9664\u8D26\u53F7 "${account.name}" \u5417\uFF1F`)) {
+              this.plugin.settings.wechatAccounts = accounts.filter((a) => a.id !== account.id);
+              if (account.id === defaultId && this.plugin.settings.wechatAccounts.length > 0) {
+                this.plugin.settings.defaultAccountId = this.plugin.settings.wechatAccounts[0].id;
+              } else if (this.plugin.settings.wechatAccounts.length === 0) {
+                this.plugin.settings.defaultAccountId = "";
+              }
+              await this.plugin.saveSettings();
+              this.display();
+            }
+          };
+        }
+      }
+      const addBtnContainer = containerEl2.createDiv({ cls: "wechat-add-account-container" });
+      if (accounts.length < MAX_ACCOUNTS) {
+        const addBtn = addBtnContainer.createEl("button", {
+          text: "+ \u6DFB\u52A0\u8D26\u53F7",
+          cls: "wechat-btn-add"
+        });
+        addBtn.onclick = () => this.showEditAccountModal(null);
+      } else {
+        addBtnContainer.createEl("p", {
+          text: `\u5DF2\u8FBE\u5230\u6700\u5927\u8D26\u53F7\u6570\u91CF (${MAX_ACCOUNTS})`,
+          cls: "setting-item-description",
+          attr: { style: "color: var(--text-muted);" }
+        });
+      }
+      this.renderAiSettingsSection(containerEl2);
+      new Setting(containerEl2).setName("\u9AD8\u7EA7\u8BBE\u7F6E").setHeading();
+      new Setting(containerEl2).setName("\u53D1\u9001\u6210\u529F\u540E\u81EA\u52A8\u6E05\u7406\u8D44\u6E90").setDesc("\u9ED8\u8BA4\u5173\u95ED\u3002\u5F00\u542F\u540E\u4F1A\u5728\u521B\u5EFA\u8349\u7A3F\u6210\u529F\u540E\uFF0C\u5220\u9664\u4F60\u5728\u4E0B\u65B9\u914D\u7F6E\u7684\u76EE\u5F55\u3002").addToggle((toggle) => toggle.setValue(this.plugin.settings.cleanupAfterSync).onChange(async (value) => {
+        this.plugin.settings.cleanupAfterSync = value;
+        await this.plugin.saveSettings();
+      }));
+      let hasWarnedAbsoluteCleanupPath = false;
+      new Setting(containerEl2).setName("\u6E05\u7406\u76EE\u5F55").setDesc("\u586B\u5199 vault \u5185\u76F8\u5BF9\u8DEF\u5F84\uFF08\u4E0D\u8981\u586B /Users/... \u8FD9\u7C7B\u7EDD\u5BF9\u8DEF\u5F84\uFF09\uFF0C\u652F\u6301 {{note}} \u5360\u4F4D\u7B26\uFF0C\u4F8B\u5982 published/{{note}}_img\u3002").addText((text) => text.setPlaceholder("published/{{note}}_img").setValue(this.plugin.settings.cleanupDirTemplate || "").onChange(async (value) => {
+        if (this.isAbsolutePathLike(value)) {
+          if (!hasWarnedAbsoluteCleanupPath) {
+            new Notice("\u26A0\uFE0F \u6E05\u7406\u76EE\u5F55\u8BF7\u586B\u5199 vault \u5185\u76F8\u5BF9\u8DEF\u5F84\uFF0C\u4E0D\u8981\u4F7F\u7528\u7EDD\u5BF9\u8DEF\u5F84\uFF08\u5982 /Users/... \u6216 C:...\uFF09");
+            hasWarnedAbsoluteCleanupPath = true;
           }
-        };
-      }
-    }
-    const addBtnContainer = containerEl.createDiv({ cls: "wechat-add-account-container" });
-    if (accounts.length < MAX_ACCOUNTS) {
-      const addBtn = addBtnContainer.createEl("button", {
-        text: "+ \u6DFB\u52A0\u8D26\u53F7",
-        cls: "wechat-btn-add"
-      });
-      addBtn.onclick = () => this.showEditAccountModal(null);
-    } else {
-      addBtnContainer.createEl("p", {
-        text: `\u5DF2\u8FBE\u5230\u6700\u5927\u8D26\u53F7\u6570\u91CF (${MAX_ACCOUNTS})`,
-        cls: "setting-item-description",
-        attr: { style: "color: var(--text-muted);" }
-      });
-    }
-    this.renderAiSettingsSection(containerEl);
-    new Setting(containerEl).setName("\u9AD8\u7EA7\u8BBE\u7F6E").setHeading();
-    new Setting(containerEl).setName("\u53D1\u9001\u6210\u529F\u540E\u81EA\u52A8\u6E05\u7406\u8D44\u6E90").setDesc("\u9ED8\u8BA4\u5173\u95ED\u3002\u5F00\u542F\u540E\u4F1A\u5728\u521B\u5EFA\u8349\u7A3F\u6210\u529F\u540E\uFF0C\u5220\u9664\u4F60\u5728\u4E0B\u65B9\u914D\u7F6E\u7684\u76EE\u5F55\u3002").addToggle((toggle) => toggle.setValue(this.plugin.settings.cleanupAfterSync).onChange(async (value) => {
-      this.plugin.settings.cleanupAfterSync = value;
-      await this.plugin.saveSettings();
-    }));
-    let hasWarnedAbsoluteCleanupPath = false;
-    new Setting(containerEl).setName("\u6E05\u7406\u76EE\u5F55").setDesc("\u586B\u5199 vault \u5185\u76F8\u5BF9\u8DEF\u5F84\uFF08\u4E0D\u8981\u586B /Users/... \u8FD9\u7C7B\u7EDD\u5BF9\u8DEF\u5F84\uFF09\uFF0C\u652F\u6301 {{note}} \u5360\u4F4D\u7B26\uFF0C\u4F8B\u5982 published/{{note}}_img\u3002").addText((text) => text.setPlaceholder("published/{{note}}_img").setValue(this.plugin.settings.cleanupDirTemplate || "").onChange(async (value) => {
-      if (this.isAbsolutePathLike(value)) {
-        if (!hasWarnedAbsoluteCleanupPath) {
-          new Notice("\u26A0\uFE0F \u6E05\u7406\u76EE\u5F55\u8BF7\u586B\u5199 vault \u5185\u76F8\u5BF9\u8DEF\u5F84\uFF0C\u4E0D\u8981\u4F7F\u7528\u7EDD\u5BF9\u8DEF\u5F84\uFF08\u5982 /Users/... \u6216 C:\\...\uFF09");
-          hasWarnedAbsoluteCleanupPath = true;
+        } else {
+          hasWarnedAbsoluteCleanupPath = false;
         }
-      } else {
-        hasWarnedAbsoluteCleanupPath = false;
-      }
-      const normalized = this.normalizeVaultPath(value);
-      if (normalized.includes("..")) {
-        new Notice("\u274C \u6E05\u7406\u76EE\u5F55\u4E0D\u80FD\u5305\u542B ..");
-        return;
-      }
-      this.plugin.settings.cleanupDirTemplate = normalized;
-      await this.plugin.saveSettings();
-    }));
-    new Setting(containerEl).setName("\u4F7F\u7528\u7CFB\u7EDF\u56DE\u6536\u7AD9").setDesc("\u5F00\u542F\u65F6\u4F18\u5148\u79FB\u52A8\u5230\u7CFB\u7EDF\u56DE\u6536\u7AD9\uFF1B\u5173\u95ED\u65F6\u76F4\u63A5\u4ECE vault \u5220\u9664\u3002").addToggle((toggle) => toggle.setValue(this.plugin.settings.cleanupUseSystemTrash !== false).onChange(async (value) => {
-      this.plugin.settings.cleanupUseSystemTrash = value;
-      await this.plugin.saveSettings();
-    }));
-    let hasWarnedInsecureProxy = false;
-    new Setting(containerEl).setName("API \u4EE3\u7406\u5730\u5740").setDesc(createFragment((frag) => {
-      const descDiv = frag.createDiv();
-      descDiv.appendText("\u5982\u679C\u4F60\u7684\u7F51\u7EDC IP \u7ECF\u5E38\u53D8\u5316\uFF0C\u53EF\u914D\u7F6E\u4EE3\u7406\u670D\u52A1\u3002");
-      descDiv.createEl("a", {
-        text: "\u67E5\u770B\u90E8\u7F72\u6307\u5357",
-        href: "https://xiaoweibox.top/chats/wechat-proxy",
-        style: "margin-left: 5px;"
-      });
-      frag.createDiv({
-        cls: "wechat-proxy-note",
-        style: "margin-top: 6px; font-size: 12px; color: var(--text-muted); background: var(--background-secondary); padding: 8px; border-radius: 4px;"
-      }, (el) => {
-        el.createSpan({ text: "\u{1F512} \u5B89\u5168\u63D0\u793A\uFF1A\u4EE3\u7406\u670D\u52A1\u5C06\u4E2D\u8F6C\u60A8\u7684\u8BF7\u6C42\u3002\u8BF7\u786E\u4FDD\u4F7F\u7528\u53D7\u4FE1\u4EFB\u7684\u4EE3\u7406\uFF08\u81EA\u5EFA\u6216\u53EF\u9760\u7B2C\u4E09\u65B9\uFF09\uFF0C\u4EE5\u4FDD\u62A4 AppSecret \u5B89\u5168\u3002" });
-      });
-    })).addText((text) => text.setPlaceholder("https://your-proxy.workers.dev").setValue(this.plugin.settings.proxyUrl).onChange(async (value) => {
-      const trimmedValue = value.trim();
-      if (trimmedValue && !trimmedValue.startsWith("https://")) {
-        if (!hasWarnedInsecureProxy) {
-          new Notice("\u26A0\uFE0F \u5B89\u5168\u98CE\u9669\uFF1A\u4EE3\u7406\u5730\u5740\u5FC5\u987B\u4F7F\u7528 HTTPS \u4EE5\u4FDD\u62A4\u60A8\u7684 AppSecret\u3002");
-          hasWarnedInsecureProxy = true;
+        const normalized = this.normalizeVaultPath(value);
+        this.plugin.settings.cleanupDirTemplate = normalized;
+        await this.plugin.saveSettings();
+      }));
+      new Setting(containerEl2).setName("\u4F7F\u7528\u7CFB\u7EDF\u56DE\u6536\u7AD9").setDesc("\u5F00\u542F\u65F6\u4F18\u5148\u79FB\u52A8\u5230\u7CFB\u7EDF\u56DE\u6536\u7AD9\uFF1B\u5173\u95ED\u65F6\u76F4\u63A5\u4ECE vault \u5220\u9664\u3002").addToggle((toggle) => toggle.setValue(this.plugin.settings.cleanupUseSystemTrash !== false).onChange(async (value) => {
+        this.plugin.settings.cleanupUseSystemTrash = value;
+        await this.plugin.saveSettings();
+      }));
+      let hasWarnedInsecureProxy = false;
+      new Setting(containerEl2).setName("API \u4EE3\u7406\u5730\u5740").setDesc(createFragment((frag) => {
+        const descDiv = frag.createDiv();
+        descDiv.appendText("\u5982\u679C\u4F60\u7684\u7F51\u7EDC IP \u7ECF\u5E38\u53D8\u5316\uFF0C\u53EF\u914D\u7F6E\u4EE3\u7406\u670D\u52A1\u3002");
+        descDiv.createEl("a", {
+          text: "\u67E5\u770B\u90E8\u7F72\u6307\u5357",
+          href: "https://xiaoweibox.top/chats/wechat-proxy",
+          attr: { style: "margin-left: 5px;" }
+        });
+        frag.createDiv({
+          cls: "wechat-proxy-note",
+          attr: { style: "margin-top: 6px; font-size: 12px; color: var(--text-muted); background: var(--background-secondary); padding: 8px; border-radius: 4px;" }
+        }, (el) => {
+          el.createSpan({ text: "\u{1F512} \u5B89\u5168\u63D0\u793A\uFF1A\u4EE3\u7406\u670D\u52A1\u5C06\u4E2D\u8F6C\u60A8\u7684\u8BF7\u6C42\u3002\u8BF7\u786E\u4FDD\u4F7F\u7528\u53D7\u4FE1\u4EFB\u7684\u4EE3\u7406\uFF08\u81EA\u5EFA\u6216\u53EF\u9760\u7B2C\u4E09\u65B9\uFF09\uFF0C\u4EE5\u4FDD\u62A4 AppSecret \u5B89\u5168\u3002" });
+        });
+      })).addText((text) => text.setPlaceholder("https://your-proxy.workers.dev").setValue(this.plugin.settings.proxyUrl || "").onChange(async (value) => {
+        const trimmedValue = value.trim();
+        if (trimmedValue && !trimmedValue.toLowerCase().startsWith("https://")) {
+          if (!hasWarnedInsecureProxy) {
+            new Notice("\u26A0\uFE0F \u5B89\u5168\u98CE\u9669\uFF1A\u4EE3\u7406\u5730\u5740\u5FC5\u987B\u4F7F\u7528 HTTPS \u4EE5\u4FDD\u62A4\u60A8\u7684 AppSecret\u3002");
+            hasWarnedInsecureProxy = true;
+          }
+        } else {
+          hasWarnedInsecureProxy = false;
         }
-      } else {
-        hasWarnedInsecureProxy = false;
-      }
-      this.plugin.settings.proxyUrl = trimmedValue;
-      await this.plugin.saveSettings();
-    }));
+        this.plugin.settings.proxyUrl = trimmedValue;
+        await this.plugin.saveSettings();
+      }));
+    }
+    renderMultiPlatformSettingsTab(this, multiContent);
   }
   renderAiSettingsSection(containerEl) {
     new Setting(containerEl).setName("AI \u7F16\u6392").setDesc("\u7BA1\u7406\u6A21\u578B\u3001\u9ED8\u8BA4\u5E03\u5C40\u3001\u9ED8\u8BA4\u989C\u8272\u548C\u7F13\u5B58\u7B56\u7565\u3002\u5B9E\u9645\u751F\u6210\u4E0E\u5E94\u7528\u5165\u53E3\u5728\u8F6C\u6362\u5668\u9876\u90E8\u5DE5\u5177\u680F\u7684\u300CAI \u7F16\u6392\u300D\u6309\u94AE\u4E2D\u3002").setHeading();
@@ -16185,7 +20572,7 @@ var AppleStyleSettingTab = class extends PluginSettingTab {
 };
 var AppleStylePlugin = class extends Plugin {
   async onload() {
-    console.log("\u{1F4DD} \u6B63\u5728\u52A0\u8F7D\u5FAE\u4FE1\u516C\u4F17\u53F7\u8F6C\u6362\u5668...");
+    console.log("\u{1F4DD} \u6B63\u5728\u52A0\u8F7D Obsidian \u53D1\u5E03\u52A9\u624B...");
     await this.loadSettings();
     this.registerView(
       APPLE_STYLE_VIEW,
@@ -16221,7 +20608,8 @@ var AppleStylePlugin = class extends Plugin {
         console.warn("\u540C\u6B65\u8F6C\u6362\u5668\u6807\u9898\u5931\u8D25:", error);
       });
     });
-    console.log("\u2705 \u5FAE\u4FE1\u516C\u4F17\u53F7\u8F6C\u6362\u5668\u52A0\u8F7D\u5B8C\u6210");
+    this.startWechatSyncBridgeInBackground("plugin-load");
+    console.log("\u2705 Obsidian \u53D1\u5E03\u52A9\u624B\u52A0\u8F7D\u5B8C\u6210");
   }
   insertImageSwipeCallout(editor, type = "image-swipe") {
     if (!editor || typeof editor.replaceSelection !== "function") {
@@ -16282,10 +20670,69 @@ var AppleStylePlugin = class extends Plugin {
     }
     return null;
   }
+  getWechatSyncBridgeService() {
+    var _a, _b;
+    const settings = normalizeMultiPlatformSyncSettings(this.settings.multiPlatformSync);
+    const cacheKey = [
+      settings.port,
+      settings.token,
+      settings.allowRemote ? 1 : 0
+    ].join(":");
+    if (this._wechatSyncBridgeService && this._wechatSyncBridgeCacheKey === cacheKey) {
+      return this._wechatSyncBridgeService;
+    }
+    if ((_a = this._wechatSyncBridgeService) == null ? void 0 : _a.stop) {
+      this._wechatSyncBridgeService.stop().catch((error) => {
+        console.warn("\u505C\u6B62\u65E7\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u5931\u8D25:", error);
+      });
+    }
+    const http = require("http");
+    this._wechatSyncBridgeCacheKey = cacheKey;
+    const self = this;
+    this._wechatSyncBridgeService = createWechatSyncBridgeService({
+      http,
+      port: settings.port,
+      token: settings.token,
+      allowRemote: settings.allowRemote,
+      serverVersion: ((_b = this.manifest) == null ? void 0 : _b.version) || "",
+      initialConnectedClients: settings.connectedClients || [],
+      async onClientRegistryChange(clients) {
+        var _a2, _b2, _c, _d;
+        self.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
+          ...self.settings.multiPlatformSync,
+          connectedClients: clients
+        });
+        await self.saveSettings();
+        (_d = (_c = (_b2 = (_a2 = self.app) == null ? void 0 : _a2.setting) == null ? void 0 : _b2.activeTab) == null ? void 0 : _c.display) == null ? void 0 : _d.call(_c);
+      }
+    });
+    return this._wechatSyncBridgeService;
+  }
+  startWechatSyncBridgeInBackground(reason = "manual") {
+    const settings = normalizeMultiPlatformSyncSettings(this.settings.multiPlatformSync);
+    if (!settings.enabled)
+      return;
+    const bridge = this.getWechatSyncBridgeService();
+    bridge.start().then((status) => {
+      console.info("[Wechatsync] bridge warm start", {
+        reason,
+        port: settings.port,
+        status
+      });
+    }).catch((error) => {
+      console.warn("[Wechatsync] bridge warm start failed", {
+        reason,
+        port: settings.port,
+        code: error == null ? void 0 : error.code,
+        message: (error == null ? void 0 : error.message) || String(error)
+      });
+    });
+  }
   async loadSettings() {
     const loadedData = await this.loadData() || {};
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
     let didMigrate = false;
+    this.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings(this.settings.multiPlatformSync);
     const rawAiSettings = loadedData.ai;
     this.settings.ai = normalizeAiSettings(rawAiSettings || this.settings.ai || {});
     if (rawAiSettings !== void 0) {
@@ -16472,8 +20919,14 @@ var AppleStylePlugin = class extends Plugin {
       return false;
     }
   }
-  onunload() {
-    console.log("\u{1F4DD} \u5FAE\u4FE1\u516C\u4F17\u53F7\u8F6C\u6362\u5668\u5DF2\u5378\u8F7D");
+  async onunload() {
+    var _a;
+    if ((_a = this._wechatSyncBridgeService) == null ? void 0 : _a.stop) {
+      await this._wechatSyncBridgeService.stop().catch((error) => {
+        console.warn("\u505C\u6B62\u6D4F\u89C8\u5668\u63D2\u4EF6\u8FDE\u63A5\u5931\u8D25:", error);
+      });
+    }
+    console.log("\u{1F4DD} Obsidian \u53D1\u5E03\u52A9\u624B\u5DF2\u5378\u8F7D");
   }
 };
 module.exports = AppleStylePlugin;
@@ -16482,3 +20935,7 @@ module.exports.WechatAPI = WechatAPI;
 module.exports.AppleStyleSettingTab = AppleStyleSettingTab;
 module.exports.createImageSwipeCalloutMarkdown = createImageSwipeCalloutMarkdown;
 module.exports.getImageSwipeCommandCopy = getImageSwipeCommandCopy;
+module.exports.stripMarkdownFrontmatter = stripMarkdownFrontmatter;
+module.exports.describeWechatsyncConnectionState = describeWechatsyncConnectionState;
+module.exports.renderWechatsyncConnectionStatusBar = renderWechatsyncConnectionStatusBar;
+module.exports.formatWechatsyncCheckedAt = formatWechatsyncCheckedAt;

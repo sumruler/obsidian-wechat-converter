@@ -117,7 +117,7 @@ describe('AppleStyleView - sync action modal flows', () => {
     configBtn.onclick();
 
     expect(notices.length).toBeGreaterThan(0);
-    expect(notices[notices.length - 1].message).toContain('请在设置中打开 Wechat Converter 并配置账号');
+    expect(notices[notices.length - 1].message).toContain('请在设置中打开 Obsidian 发布助手并配置公众号账号');
   });
 
   it('showSyncFailureActions should trigger retry callback when user clicks retry', async () => {
@@ -146,6 +146,6 @@ describe('AppleStyleView - sync action modal flows', () => {
     settingsBtn.onclick();
 
     expect(notices.length).toBeGreaterThan(0);
-    expect(notices[notices.length - 1].message).toContain('请在设置中打开 Wechat Converter 并配置账号');
+    expect(notices[notices.length - 1].message).toContain('请在设置中打开 Obsidian 发布助手并配置公众号账号');
   });
 });

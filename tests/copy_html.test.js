@@ -130,6 +130,43 @@ describe('AppleStyleView - copyHTML clipboard behavior', () => {
     expect(html).not.toContain('<svg');
   });
 
+  it('should prepare Wechatsync article code blocks as light plain pre/code without line numbers', async () => {
+    const sourceHtml = [
+      '<section>',
+      '<section class="code-snippet__fix" style="width:100% !important;margin:12px 0 !important;background:#0d1117 !important;border:1px solid #30363d !important;border-radius:8px !important;overflow:hidden !important;display:block !important;">',
+      '<section style="display:block !important;background:#161b22 !important;padding:6px 10px !important;"><span></span></section>',
+      '<section style="background:#0d1117 !important;color:#f0f6fc !important;">',
+      '<pre style="margin:0 !important;">',
+      '<section style="display:flex !important;">',
+      '<section style="border-right:1px solid rgba(255,255,255,0.1) !important;user-select:none !important;"><section>1</section><section>2</section></section>',
+      '<section style="padding:12px 12px 12px 16px !important;">',
+      '<section style="white-space:nowrap !important;display:inline-block !important;">const&nbsp;x = 1;<br/>console.log(x);</section>',
+      '</section>',
+      '</section>',
+      '</pre>',
+      '</section>',
+      '</section>',
+      '</section>',
+    ].join('');
+
+    const html = await view.prepareHtmlForWechatsyncArticle(sourceHtml);
+
+    expect(view.processImagesToDataURL).toHaveBeenCalledTimes(1);
+    expect(html).toContain('<pre style=');
+    expect(html).toContain('<code style=');
+    expect(html).toContain('background:#f6f8fa');
+    expect(html).toContain('color:#24292f');
+    expect(html).toContain('const x = 1;');
+    expect(html).toContain('console.log(x);');
+    expect(html).not.toContain('code-snippet__fix');
+    expect(html).not.toContain('line-numbers');
+    expect(html).not.toContain('background:#0d1117');
+    expect(html).not.toContain('background:#161b22');
+    expect(html).not.toContain('user-select:none');
+    expect(html).not.toContain('<section>1</section>');
+    expect(html).not.toContain('<section>2</section>');
+  });
+
   it('should keep long code blocks horizontally scrollable after clipboard conversion', async () => {
     const converter = await createLegacyConverter({
       themeOptions: {

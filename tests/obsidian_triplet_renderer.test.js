@@ -165,6 +165,23 @@ describe('Obsidian Triplet Renderer', () => {
     expect(output).toContain('<img src="images/b.png" alt="图二">');
   });
 
+  it('should preserve remote image-swipe callouts for Obsidian image rendering', () => {
+    const input = [
+      '> [!image-swipe] 左右滑动查看图床图片',
+      '> ![远程一|400](https://cdn.example.com/a.png?x=1&y=2)',
+      '> https://img.example.com/b.jpg',
+      '> <//img.example.com/c.webp>',
+    ].join('\n');
+
+    const { markdown: output } = preprocessMarkdownForTriplet(input, {});
+
+    expect(output).toContain('> [!image-swipe] 左右滑动查看图床图片');
+    expect(output).toContain('> ![远程一|400](https://cdn.example.com/a.png?x=1&y=2)');
+    expect(output).toContain('> ![](https://img.example.com/b.jpg)');
+    expect(output).toContain('> ![](//img.example.com/c.webp)');
+    expect(output).not.toContain('data-owc-image-swipe="1"');
+  });
+
   it('should leave fenced image-sensitive syntax untouched', () => {
     const input = [
       ':::image-sensitive 此类图片可能引发不适，向左滑动查看',

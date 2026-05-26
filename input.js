@@ -36,15 +36,91 @@ const {
   testAiProviderConnection,
 } = require('./services/ai-layout');
 const { createWechatSyncService } = require('./services/wechat-sync');
+const {
+  DEFAULT_WECHATSYNC_PORT,
+  createWechatSyncBridgeService,
+  isUnsupportedBridgeMethodError: isWechatSyncUnsupportedMethodError,
+  retryRecoverableBridgeOperation,
+} = require('./services/wechatsync-bridge');
+const {
+  buildWechatsyncPlatformCatalog,
+  getFallbackWechatsyncPlatforms,
+  getMultiPlatformResultSummary,
+  getWechatSyncResultError,
+  getWechatSyncResultPlatformId,
+  getWechatSyncResultUrl,
+  getWechatsyncPlatformStatusBadge,
+  isWechatSyncConnectionFailure,
+  normalizeWechatSyncResponseResults,
+  normalizeWechatsyncAuthSnapshot,
+  normalizeWechatsyncPlatform,
+  normalizeWechatsyncPlatformList,
+  probeWechatsyncPlatformsIndividually,
+  sortWechatsyncPlatformItemsForDisplay,
+  summarizeWechatsyncPlatformResponse,
+  updateCachedPlatformsAfterSync,
+} = require('./services/wechatsync-results');
 const { resolveSyncAccount, toSyncFriendlyMessage } = require('./services/sync-context');
 const { processAllImages: processAllImagesService, processMathFormulas: processMathFormulasService } = require('./services/wechat-media');
 const { cleanHtmlForDraft: cleanHtmlForDraftService } = require('./services/wechat-html-cleaner');
 const { rasterizeSvgToPngBlob } = require('./services/svg-rasterizer');
 const { createObsidianFetchAdapter } = require('./services/obsidian-fetch-adapter');
+const { stripMarkdownFrontmatter } = require('./services/markdown-utils');
+const { mapAppUrlImagesToAssetUrls } = require('./services/article-image-assets');
 
 // 视图类型标识
 const APPLE_STYLE_VIEW = 'apple-style-converter';
-const APPLE_STYLE_VIEW_TITLE = '微信公众号转换器';
+const APPLE_STYLE_VIEW_TITLE = 'Obsidian 发布助手';
+const OBSIDIAN_PUBLISHER_PRO_URL = 'https://xiaoweibox.top/obsidian-publisher/pro/';
+const OBSIDIAN_PUBLISHER_GUIDE_URL = 'https://xiaoweibox.top/obsidian-publisher/guide/';
+const OBSIDIAN_PUBLISHER_EXTENSION_GUIDE_URL = `${OBSIDIAN_PUBLISHER_GUIDE_URL}?from=obsidian-plugin#install-extension`;
+const OBSIDIAN_PUBLISHER_BRIDGE_GUIDE_URL = `${OBSIDIAN_PUBLISHER_GUIDE_URL}?from=obsidian-plugin#bridge`;
+const MULTI_PLATFORM_TAB_LABEL = '其他平台（小红书/知乎/抖音等）';
+
+// Pure data helpers extracted to services/wechatsync-settings.js so the
+// views/ layer can normalize / read settings without depending on input.js.
+const {
+  createDefaultMultiPlatformSyncSettings,
+  normalizeWechatsyncPlatformId,
+  parseWechatsyncPlatformIds,
+  mergeWechatsyncPlatformLists,
+  normalizeWechatSyncCapabilities,
+  hasWechatSyncCapability,
+  normalizeWechatSyncRecentTasks,
+  normalizeMultiPlatformConnection,
+  normalizeMultiPlatformSyncSettings,
+  getConfiguredWechatsyncPlatforms,
+  getAvailableWechatsyncPlatforms,
+} = require('./services/wechatsync-settings');
+
+const {
+  formatWechatsyncCheckedAt,
+  describeWechatsyncConnectionState,
+  renderWechatsyncConnectionStatusBar,
+} = require('./views/connection-status-bar.js');
+
+const { renderMultiPlatformSettingsTab } = require('./views/settings/multi-platform-tab.js');
+const { showMultiPlatformPublishModal } = require('./views/publish-modal/multi-platform.js');
+
+function formatWechatsyncCapabilityLabels(capabilities = []) {
+  const labels = {
+    draft: '草稿',
+    image_upload: '图片',
+    cover: '封面',
+    tags: '标签',
+    categories: '分类',
+    article: '文章',
+  };
+  const seen = new Set();
+  return (Array.isArray(capabilities) ? capabilities : [])
+    .map((capability) => labels[capability] || '')
+    .filter((label) => {
+      if (!label || seen.has(label)) return false;
+      seen.add(label);
+      return true;
+    })
+    .slice(0, 4);
+}
 
 const IMAGE_SWIPE_COMMAND_COPY = {
   'image-swipe': {
@@ -140,6 +216,7 @@ const DEFAULT_SETTINGS = {
   cleanupAfterSync: false,
   cleanupUseSystemTrash: true,
   cleanupDirTemplate: '', // 发送成功后要清理的目录（支持 {{note}}）
+  multiPlatformSync: createDefaultMultiPlatformSyncSettings(),
   // 旧字段保留用于迁移检测
   wechatAppId: '',
   wechatAppSecret: '',
@@ -574,7 +651,7 @@ class AppleStyleView extends ItemView {
   }
 
   async onOpen() {
-    console.log('🍎 转换器面板打开');
+    console.log('🍎 发布助手面板打开');
     const container = this.containerEl.children[1];
     container.empty();
     container.addClass('apple-converter-container');
@@ -986,7 +1063,7 @@ class AppleStyleView extends ItemView {
     }
 
     // [同步] 按钮（始终显示；未配置账号时点击后引导去设置）
-    createIconBtn('send', '一键同步到草稿箱', () => this.showSyncModal());
+    createIconBtn('send', '发布与分发', () => this.showSyncModal());
 
     // 2. 创建悬浮设置层 (初始隐藏)
     this.settingsOverlay = container.createEl('div', { cls: 'apple-settings-overlay' });
@@ -3593,6 +3670,49 @@ class AppleStyleView extends ItemView {
     return true;
   }
 
+  openExternalUrl(url, options = {}) {
+    const target = String(url || '').trim();
+    const allowExtensionUrls = options?.allowExtensionUrls === true;
+    const isHttpUrl = /^https?:\/\//i.test(target);
+    const isExtensionUrl = /^(chrome|edge|brave|moz)-extension:\/\//i.test(target);
+    if (!isHttpUrl && !(allowExtensionUrls && isExtensionUrl)) {
+      new Notice('草稿链接不可用');
+      return false;
+    }
+
+    try {
+      const electron = require('electron');
+      if (electron?.shell?.openExternal) {
+        electron.shell.openExternal(target);
+        return true;
+      }
+    } catch {
+      // Mobile and some sandboxed runtimes do not expose Electron.
+    }
+
+    if (typeof window !== 'undefined' && typeof window.open === 'function') {
+      window.open(target, '_blank', 'noopener');
+      return true;
+    }
+
+    new Notice('无法打开草稿链接，请在浏览器插件中查看同步结果');
+    return false;
+  }
+
+  openPublisherProPage() {
+    return this.openExternalUrl(OBSIDIAN_PUBLISHER_PRO_URL);
+  }
+
+  openPublisherGuidePage(section = '') {
+    if (section === 'bridge') {
+      return this.openExternalUrl(OBSIDIAN_PUBLISHER_BRIDGE_GUIDE_URL);
+    }
+    if (section === 'install-extension') {
+      return this.openExternalUrl(OBSIDIAN_PUBLISHER_EXTENSION_GUIDE_URL);
+    }
+    return this.openExternalUrl(OBSIDIAN_PUBLISHER_GUIDE_URL);
+  }
+
   showAccountSetupEmptyState() {
     const { Modal } = require('obsidian');
     if (typeof Modal !== 'function') {
@@ -3613,7 +3733,7 @@ class AppleStyleView extends ItemView {
     const emptyState = modal.contentEl.createDiv({ cls: 'wechat-sync-empty-state' });
     emptyState.createEl('div', { cls: 'wechat-sync-empty-icon', text: '⚙️' });
     emptyState.createEl('h3', { text: '先配置公众号账号' });
-    emptyState.createEl('p', { text: '请先在插件设置中填写 AppID / AppSecret，再使用一键同步到草稿箱。' });
+    emptyState.createEl('p', { text: '请先在插件设置中填写 AppID / AppSecret，再发送到微信草稿箱。' });
 
     const btnRow = modal.contentEl.createDiv({ cls: 'wechat-modal-buttons' });
     const cancelBtn = btnRow.createEl('button', { text: '取消' });
@@ -3623,7 +3743,7 @@ class AppleStyleView extends ItemView {
     configBtn.onclick = () => {
       modal.close();
       if (!this.openPluginSettings()) {
-        new Notice('请在设置中打开 Wechat Converter 并配置账号');
+        new Notice('请在设置中打开 Obsidian 发布助手并配置公众号账号');
       }
     };
 
@@ -3657,7 +3777,7 @@ class AppleStyleView extends ItemView {
     settingsBtn.onclick = () => {
       modal.close();
       if (!this.openPluginSettings()) {
-        new Notice('请在设置中打开 Wechat Converter 并配置账号');
+        new Notice('请在设置中打开 Obsidian 发布助手并配置公众号账号');
       }
     };
 
@@ -3680,7 +3800,44 @@ class AppleStyleView extends ItemView {
   /**
    * 显示同步选项 Modal
    */
-  showSyncModal() {
+  preparePublishModalShell(modal, { mode = 'wechat', mobileSync = false } = {}) {
+    modal.titleEl.setText('发布与分发');
+    modal.titleEl.removeClass?.('wechat-multiplatform-title');
+    if (typeof modal.contentEl.empty === 'function') {
+      modal.contentEl.empty();
+    } else {
+      modal.contentEl.replaceChildren?.();
+    }
+    modal.contentEl.addClass('wechat-sync-modal');
+    modal.contentEl.removeClass?.('wechat-multiplatform-modal');
+    modal.contentEl.removeClass?.('wechat-multiplatform-result-modal');
+    modal.modalEl?.addClass('wechat-publish-shell');
+    modal.modalEl?.removeClass?.('wechat-multiplatform-shell');
+    if (mobileSync) {
+      modal.contentEl.addClass('wechat-sync-modal-mobile');
+      modal.modalEl?.addClass('wechat-sync-shell-mobile');
+    }
+    if (mode === 'multi') {
+      modal.titleEl.addClass?.('wechat-multiplatform-title');
+      modal.contentEl.addClass('wechat-multiplatform-modal');
+      modal.modalEl?.addClass('wechat-multiplatform-shell');
+    }
+  }
+
+  createPublishModeTabs(modal, activeMode = 'wechat') {
+    const publishModeTabs = modal.contentEl.createDiv({ cls: 'wechat-publish-mode-tabs' });
+    const wechatTab = publishModeTabs.createEl('button', {
+      text: '微信草稿箱',
+      cls: `wechat-publish-mode-tab${activeMode === 'wechat' ? ' is-active' : ''}`,
+    });
+    const multiPlatformTab = publishModeTabs.createEl('button', {
+      text: MULTI_PLATFORM_TAB_LABEL,
+      cls: `wechat-publish-mode-tab${activeMode === 'multi' ? ' is-active' : ''}`,
+    });
+    return { wechatTab, multiPlatformTab };
+  }
+
+  showSyncModal(options = {}) {
     if (!this.currentHtml) {
       new Notice(this.getMissingRenderNotice());
       return;
@@ -3688,19 +3845,40 @@ class AppleStyleView extends ItemView {
 
     const accounts = this.plugin.settings.wechatAccounts || [];
     if (accounts.length === 0) {
+      if (options.modal) {
+        const modal = options.modal;
+        const mobileSync = isMobileClient(this.app);
+        this.preparePublishModalShell(modal, { mode: 'wechat', mobileSync });
+        const { multiPlatformTab } = this.createPublishModeTabs(modal, 'wechat');
+        multiPlatformTab.onclick = () => this.showMultiPlatformSyncModal({ modal });
+        const empty = modal.contentEl.createDiv({ cls: 'wechat-sync-empty-state' });
+        empty.createEl('h3', { text: '尚未配置微信公众号账号' });
+        empty.createEl('p', { text: '微信草稿箱需要先配置公众号 API。其他平台仍可通过浏览器插件发送。' });
+        const settingsBtn = empty.createEl('button', { text: '去设置', cls: 'mod-cta' });
+        settingsBtn.onclick = () => {
+          modal.close();
+          this.openPluginSettings();
+        };
+        return;
+      }
+      if (this.plugin.settings.multiPlatformSync?.enabled) {
+        this.showMultiPlatformSyncModal();
+        return;
+      }
       this.promptConfigureWechatAccount();
       return;
     }
 
     const { Modal } = require('obsidian');
-    const modal = new Modal(this.app);
+    const modal = options.modal || new Modal(this.app);
+    const shouldOpenModal = !options.modal;
     const mobileSync = isMobileClient(this.app);
-    modal.titleEl.setText('同步到微信草稿箱');
-    modal.contentEl.addClass('wechat-sync-modal');
-    if (mobileSync) {
-      modal.contentEl.addClass('wechat-sync-modal-mobile');
-      modal.modalEl?.addClass('wechat-sync-shell-mobile');
-    }
+    this.preparePublishModalShell(modal, { mode: 'wechat', mobileSync });
+
+    const { multiPlatformTab } = this.createPublishModeTabs(modal, 'wechat');
+    multiPlatformTab.onclick = () => {
+      this.showMultiPlatformSyncModal({ modal });
+    };
 
     // 获取当前活动文件的路径，用于状态缓存
     const activeFile = this.getPublishContextFile();
@@ -3892,7 +4070,433 @@ class AppleStyleView extends ItemView {
       input.click();
     };
 
+    if (shouldOpenModal) modal.open();
+  }
+
+  async openWechatsyncTask(syncId) {
+    const taskId = String(syncId || '').trim();
+    if (!taskId) {
+      new Notice('当前任务没有 syncId，请在浏览器插件历史记录中查看最近任务');
+      return false;
+    }
+
+    const settings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const bridge = this.plugin.getWechatSyncBridgeService();
+    try {
+      await bridge.start();
+      await bridge.waitForConnection(8000);
+      const capabilities = settings.connection.capabilities || {};
+
+      if (capabilities.openSyncTask !== false) {
+        try {
+          const result = await bridge.openSyncTask(taskId, { timeoutMs: 8000 });
+          if (result?.opened !== false) {
+            new Notice('已打开浏览器插件任务窗口');
+            return true;
+          }
+        } catch (error) {
+          if (!isWechatSyncUnsupportedMethodError(error)) throw error;
+          console.warn('[Wechatsync] openSyncTask failed, falling back to task link', {
+            code: error?.code,
+            message: error?.message || String(error),
+          });
+        }
+      }
+
+      if (capabilities.getSyncTaskLink !== false) {
+        try {
+          const linkResult = await bridge.getSyncTaskLink(taskId, { timeoutMs: 5000 });
+          const url = String(linkResult?.url || '').trim();
+          if (linkResult?.canOpen !== false && url) {
+            return this.openExternalUrl(url, { allowExtensionUrls: true });
+          }
+          if (linkResult?.message) {
+            new Notice(linkResult.message, 8000);
+            return false;
+          }
+        } catch (error) {
+          if (!isWechatSyncUnsupportedMethodError(error)) throw error;
+          console.warn('[Wechatsync] getSyncTaskLink failed', {
+            code: error?.code,
+            message: error?.message || String(error),
+          });
+        }
+      }
+
+      new Notice(`请在浏览器插件历史记录中查看任务：${taskId}`, 10000);
+      return false;
+    } catch (error) {
+      console.error('[Wechatsync] open task failed', {
+        syncId: taskId,
+        code: error?.code,
+        message: error?.message || String(error),
+      });
+      new Notice(`无法打开浏览器插件任务：${error.message || String(error)}`, 10000);
+      return false;
+    }
+  }
+
+  async getWechatsyncTaskSnapshot(bridge, syncId) {
+    const taskId = String(syncId || '').trim();
+    if (!taskId) return null;
+    const settings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    if (!hasWechatSyncCapability(settings, 'getSyncTask')) return null;
+
+    try {
+      const task = await bridge.getSyncTask(taskId, { timeoutMs: 5000 });
+      if (task?.found === false) return task;
+      return task && typeof task === 'object' ? task : null;
+    } catch (error) {
+      if (isWechatSyncUnsupportedMethodError(error)) return null;
+      console.warn('[Wechatsync] getSyncTask failed after enqueue', {
+        syncId: taskId,
+        code: error?.code,
+        message: error?.message || String(error),
+      });
+      return null;
+    }
+  }
+
+  showWechatsyncEnqueueAcceptedModal({
+    syncId = '',
+    title = '',
+    platforms = [],
+    task = null,
+    usedFallbackSend = false,
+    quotaResult = null,
+  } = {}) {
+    const { Modal } = require('obsidian');
+    const taskId = String(syncId || '').trim();
+    const skippedPlatformIds = parseWechatsyncPlatformIds(quotaResult?.skippedPlatforms || []);
+    const publishedPlatformIds = parseWechatsyncPlatformIds(
+      quotaResult?.publishedPlatforms?.length ? quotaResult.publishedPlatforms : (quotaResult?.platforms || platforms)
+    );
+    const skippedPlatformSet = new Set(skippedPlatformIds);
+    const publishedPlatformSet = new Set(publishedPlatformIds);
+    if (typeof Modal !== 'function') {
+      const syncIdText = taskId ? `（任务 ${taskId}）` : '';
+      const fallbackText = usedFallbackSend ? '当前插件未提供任务 ID，' : '';
+      const quotaText = skippedPlatformIds.length
+        ? `已跳过 ${skippedPlatformIds.length} 个超出今日额度的平台。`
+        : '';
+      new Notice(`✅ 已发送到浏览器插件${syncIdText}。${fallbackText}${quotaText}请在浏览器插件的历史或目标平台草稿箱查看结果。`, 10000);
+      return;
+    }
+
+    const modal = new Modal(this.app);
+    modal.titleEl.setText('已发送到浏览器插件');
+    modal.titleEl.addClass?.('wechat-multiplatform-title');
+    modal.contentEl.addClass('wechat-sync-modal');
+    modal.contentEl.addClass('wechat-multiplatform-modal');
+    modal.contentEl.addClass('wechat-multiplatform-result-modal');
+    modal.modalEl?.addClass('wechat-publish-shell');
+    modal.modalEl?.addClass('wechat-multiplatform-shell');
+
+    const summary = modal.contentEl.createDiv({
+      cls: `wechat-multiplatform-result-summary ${skippedPlatformIds.length ? 'is-warning' : 'is-success'}`,
+    });
+    const multiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const platformCatalog = getAvailableWechatsyncPlatforms(multiPlatformSettings);
+    const platformById = new Map(platformCatalog.map((platform) => [platform.id, platform]));
+    const sortPlatformItems = (items = [], getId = (item) => item) => sortWechatsyncPlatformItemsForDisplay(items, {
+      bridgeConnected: multiPlatformSettings.connection?.status === 'connected',
+      getPlatformId: getId,
+      getPlatform: (item) => {
+        const id = getId(item);
+        return platformById.get(id) || normalizeWechatsyncPlatform(
+          item && typeof item === 'object' ? { ...item, id } : { id }
+        ) || { id };
+      },
+    });
+    const formatPlatformNames = (ids = []) => {
+      const names = sortPlatformItems(parseWechatsyncPlatformIds(ids))
+        .map((id) => platformById.get(id)?.name || id)
+        .filter(Boolean);
+      return names.length ? names.join('、') : '无';
+    };
+    summary.createEl('div', {
+      cls: 'wechat-multiplatform-result-summary-title',
+      text: skippedPlatformIds.length ? '已按免费版额度投递' : '任务已交给浏览器插件',
+    });
+    summary.createEl('p', {
+      text: skippedPlatformIds.length
+        ? `已发布到：${formatPlatformNames(publishedPlatformIds)}。跳过 ${skippedPlatformIds.length} 个超出今日额度的平台：${formatPlatformNames(skippedPlatformIds)}。升级 Pro 可发布到全部平台。`
+        : (taskId
+          ? 'Obsidian 已完成投递，不会长时间等待所有平台完成。后续草稿链接、失败原因和重试请在浏览器插件任务窗口里查看。'
+          : '当前插件版本没有返回任务 ID。文章已发送，请在浏览器插件历史记录中查看最近任务。'),
+    });
+
+    const list = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-result-list' });
+    const rawTaskPlatforms = Array.isArray(task?.platforms) && task.platforms.length
+      ? task.platforms
+      : (publishedPlatformIds.length ? publishedPlatformIds : platforms).map((id) => ({ id, status: 'queued' }));
+    const taskPlatforms = sortPlatformItems(rawTaskPlatforms.filter((item) => {
+      const platformId = parseWechatsyncPlatformIds([item?.id || item?.platform || item])[0] || '';
+      if (!platformId) return false;
+      if (skippedPlatformSet.has(platformId)) return false;
+      if (skippedPlatformSet.size > 0 && publishedPlatformSet.size > 0) {
+        return publishedPlatformSet.has(platformId);
+      }
+      return true;
+    }), (item) => parseWechatsyncPlatformIds([item?.id || item?.platform || item])[0] || '');
+
+    if (taskId) {
+      const taskRow = list.createDiv({ cls: 'wechat-multiplatform-result-row' });
+      taskRow.createEl('div', { text: '任务', cls: 'wechat-multiplatform-result-pill is-success' });
+      const taskBody = taskRow.createDiv({ cls: 'wechat-multiplatform-result-body' });
+      taskBody.createEl('div', {
+        text: task?.found === false ? '插件暂未返回任务详情' : (title || task?.title || '多平台发布任务'),
+        cls: 'wechat-multiplatform-result-name',
+      });
+      if (task?.found === false) {
+        taskBody.createEl('div', {
+          text: '请打开插件历史查看。',
+          cls: 'wechat-multiplatform-result-detail',
+        });
+      }
+    }
+
+    for (const item of taskPlatforms) {
+      const platformId = String(item?.id || item?.platform || item || '').trim();
+      if (!platformId) continue;
+      const platformName = item?.name || platformById.get(platformId)?.name || platformId;
+      const row = list.createDiv({ cls: 'wechat-multiplatform-result-row' });
+      row.createEl('div', { text: '已投递', cls: 'wechat-multiplatform-result-pill' });
+      const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
+      body.createEl('div', { text: platformName, cls: 'wechat-multiplatform-result-name' });
+    }
+
+    for (const platformId of sortPlatformItems(skippedPlatformIds)) {
+      const platformName = platformById.get(platformId)?.name || platformId;
+      const row = list.createDiv({ cls: 'wechat-multiplatform-result-row is-warning' });
+      row.createEl('div', {
+        text: '已跳过',
+        cls: 'wechat-multiplatform-result-pill is-warning',
+      });
+      const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
+      body.createEl('div', { text: platformName, cls: 'wechat-multiplatform-result-name' });
+      body.createEl('div', {
+        text: '免费版每天 3 个平台额度，当前平台未入队。',
+        cls: 'wechat-multiplatform-result-detail',
+      });
+    }
+
+    const btnRow = modal.contentEl.createDiv({ cls: 'wechat-modal-buttons' });
+    if (quotaResult?.quotaBlocked) {
+      const upgradeBtn = btnRow.createEl('button', { text: '升级 Pro' });
+      upgradeBtn.onclick = () => this.openPublisherProPage();
+    }
+    const closeBtn = btnRow.createEl('button', { text: '关闭' });
+    closeBtn.onclick = () => modal.close();
+    if (taskId) {
+      const openBtn = btnRow.createEl('button', { text: '查看任务', cls: 'mod-cta' });
+      openBtn.onclick = () => {
+        this.openWechatsyncTask(taskId);
+      };
+    }
     modal.open();
+  }
+
+  showMultiPlatformQuotaBlockedModal({ quotaResult = {}, requestedPlatformIds = [] } = {}) {
+    const { Modal } = require('obsidian');
+    const multiPlatformSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const platformCatalog = getAvailableWechatsyncPlatforms(multiPlatformSettings);
+    const platformById = new Map(platformCatalog.map((platform) => [platform.id, platform]));
+    const sortPlatformIds = (ids = []) => sortWechatsyncPlatformItemsForDisplay(parseWechatsyncPlatformIds(ids), {
+      bridgeConnected: multiPlatformSettings.connection?.status === 'connected',
+      getPlatformId: (id) => id,
+      getPlatform: (id) => platformById.get(id) || { id },
+    });
+    const skippedPlatformIds = parseWechatsyncPlatformIds(
+      quotaResult?.skippedPlatforms?.length ? quotaResult.skippedPlatforms : requestedPlatformIds
+    );
+    const formatPlatformNames = (ids = []) => {
+      const names = sortPlatformIds(ids)
+        .map((id) => platformById.get(id)?.name || id)
+        .filter(Boolean);
+      return names.length ? names.join('、') : '无';
+    };
+    const reason = quotaResult?.reason || '';
+    const rawMessage = typeof quotaResult?.message === 'string' ? quotaResult.message.trim() : '';
+    const legacyQuotaMessage = /单次最多|每次最多|每天最多发布\s*1\s*次|每天最多\s*1\s*次/.test(rawMessage);
+    const summaryText = rawMessage && !legacyQuotaMessage
+      ? rawMessage
+      : '免费版今日平台额度不足，明天 0:00 重置，或升级 Pro。';
+
+    if (typeof Modal !== 'function') {
+      new Notice(summaryText, 10000);
+      return;
+    }
+
+    const modal = new Modal(this.app);
+    modal.titleEl.setText('发布受限');
+    modal.titleEl.addClass?.('wechat-multiplatform-title');
+    modal.contentEl.addClass('wechat-sync-modal');
+    modal.contentEl.addClass('wechat-multiplatform-modal');
+    modal.contentEl.addClass('wechat-multiplatform-result-modal');
+    modal.modalEl?.addClass('wechat-publish-shell');
+    modal.modalEl?.addClass('wechat-multiplatform-shell');
+
+    const summary = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-result-summary is-warning is-quota-blocked' });
+    summary.createEl('div', {
+      cls: 'wechat-multiplatform-result-summary-title',
+      text: reason === 'daily_limit' ? '今日平台额度不足' : '免费版平台额度不足',
+    });
+    summary.createEl('p', { text: summaryText });
+    summary.createEl('div', {
+      text: skippedPlatformIds.length
+        ? `本次未入队：${formatPlatformNames(skippedPlatformIds)}`
+        : '本次未入队：浏览器插件没有返回平台明细。',
+      cls: 'wechat-multiplatform-result-detail wechat-multiplatform-quota-platforms',
+    });
+
+    const btnRow = modal.contentEl.createDiv({ cls: 'wechat-modal-buttons' });
+    const upgradeBtn = btnRow.createEl('button', { text: '升级 Pro', cls: 'mod-cta' });
+    upgradeBtn.onclick = () => this.openPublisherProPage();
+    const closeBtn = btnRow.createEl('button', { text: '关闭' });
+    closeBtn.onclick = () => modal.close();
+
+    modal.open();
+  }
+
+  showMultiPlatformSyncResultModal({ results = [], requestedPlatformIds = [], fatalError = null } = {}) {
+    const { Modal } = require('obsidian');
+    if (typeof Modal !== 'function') {
+      const message = fatalError
+        ? `浏览器插件同步失败：${fatalError.message || fatalError}`
+        : '同步完成，请在浏览器插件中查看结果';
+      new Notice(message, 10000);
+      return;
+    }
+
+    const modal = new Modal(this.app);
+    const mobileSync = isMobileClient(this.app);
+    const bridgeSettings = normalizeMultiPlatformSyncSettings(this.plugin.settings.multiPlatformSync);
+    const platformCatalog = getAvailableWechatsyncPlatforms(bridgeSettings);
+    const platformById = new Map(platformCatalog.map((platform) => [platform.id, platform]));
+    const {
+      normalizedResults,
+      successCount,
+      failedResults,
+      isAllSuccess,
+    } = getMultiPlatformResultSummary(results, requestedPlatformIds, fatalError);
+
+    modal.titleEl.setText('同步结果');
+    modal.titleEl.addClass?.('wechat-multiplatform-title');
+    modal.contentEl.addClass('wechat-sync-modal');
+    modal.contentEl.addClass('wechat-multiplatform-modal');
+    modal.contentEl.addClass('wechat-multiplatform-result-modal');
+    modal.modalEl?.addClass('wechat-publish-shell');
+    modal.modalEl?.addClass('wechat-multiplatform-shell');
+    if (mobileSync) {
+      modal.contentEl.addClass('wechat-sync-modal-mobile');
+      modal.modalEl?.addClass('wechat-sync-shell-mobile');
+    }
+
+    const getPlatformName = (result = {}) => {
+      const id = getWechatSyncResultPlatformId(result);
+      return result.platformName || result.name || platformById.get(id)?.name || id || '未知平台';
+    };
+
+    const summary = modal.contentEl.createDiv({
+      cls: `wechat-multiplatform-result-summary ${fatalError ? 'is-error' : (isAllSuccess ? 'is-success' : 'is-warning')}`,
+    });
+    summary.createEl('div', {
+      cls: 'wechat-multiplatform-result-summary-title',
+      text: fatalError
+        ? '同步没有完成'
+        : (isAllSuccess ? '草稿已保存' : '部分平台需要处理'),
+    });
+    summary.createEl('p', {
+      text: fatalError
+        ? (fatalError.code === 'SYNC_TIMEOUT'
+          ? 'Obsidian 没有等到浏览器插件的最终回调。插件可能仍在后台同步，请先查看插件历史或目标平台草稿箱；之后可以减少平台后重试。'
+          : (fatalError.message || '浏览器插件连接中断，请检查插件、连接令牌或浏览器登录态后重试。'))
+        : (normalizedResults.length > 0
+          ? `${successCount}/${normalizedResults.length} 个平台已保存为草稿。成功的平台可以直接打开草稿检查，失败的平台修复后重新同步。`
+          : '请求已发送到浏览器插件。若这里没有返回平台明细，请在浏览器插件中查看结果。'),
+    });
+
+    const list = modal.contentEl.createDiv({ cls: 'wechat-multiplatform-result-list' });
+
+    if (fatalError) {
+      const row = list.createDiv({ cls: 'wechat-multiplatform-result-row is-error' });
+      const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
+      body.createEl('div', { text: '浏览器插件发布', cls: 'wechat-multiplatform-result-name' });
+      body.createEl('div', {
+        text: fatalError.code === 'SYNC_TIMEOUT'
+          ? '同步请求已超时，暂时无法拿到逐平台进度。请在浏览器插件侧确认是否已经生成草稿。'
+          : (fatalError.message || '连接不可用'),
+        cls: 'wechat-multiplatform-result-detail',
+      });
+    } else if (normalizedResults.length === 0) {
+      const row = list.createDiv({ cls: 'wechat-multiplatform-result-row' });
+      const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
+      body.createEl('div', { text: '等待插件结果', cls: 'wechat-multiplatform-result-name' });
+      body.createEl('div', {
+        text: '当前连接没有返回平台明细。请在浏览器插件侧确认草稿是否已生成。',
+        cls: 'wechat-multiplatform-result-detail',
+      });
+    } else {
+      const sortedResults = sortWechatsyncPlatformItemsForDisplay(normalizedResults, {
+        bridgeConnected: bridgeSettings.connection?.status === 'connected',
+        getPlatformId: (result) => getWechatSyncResultPlatformId(result),
+        getPlatform: (result) => {
+          const id = getWechatSyncResultPlatformId(result);
+          return platformById.get(id) || normalizeWechatsyncPlatform({ ...result, id }) || { id };
+        },
+      });
+      for (const result of sortedResults) {
+        const draftUrl = getWechatSyncResultUrl(result);
+        const errorMessage = getWechatSyncResultError(result);
+        const isSuccess = result?.success === true;
+        const row = list.createDiv({
+          cls: `wechat-multiplatform-result-row ${isSuccess ? 'is-success' : 'is-error'}`,
+        });
+        row.createEl('div', {
+          text: isSuccess ? '成功' : '失败',
+          cls: `wechat-multiplatform-result-pill ${isSuccess ? 'is-success' : 'is-error'}`,
+        });
+        const body = row.createDiv({ cls: 'wechat-multiplatform-result-body' });
+        body.createEl('div', {
+          text: getPlatformName(result),
+          cls: 'wechat-multiplatform-result-name',
+        });
+        body.createEl('div', {
+          text: isSuccess
+            ? (draftUrl ? '已保存为草稿，请打开后检查排版并手动发布。' : '已同步成功，请在浏览器插件中查看草稿。')
+            : (errorMessage || '同步失败，请修复后重试。'),
+          cls: 'wechat-multiplatform-result-detail',
+        });
+        if (isSuccess && draftUrl) {
+          const openBtn = row.createEl('button', {
+            text: '打开草稿',
+            cls: 'wechat-multiplatform-inline-btn',
+          });
+          openBtn.onclick = () => this.openExternalUrl(draftUrl);
+        }
+      }
+    }
+
+    const btnRow = modal.contentEl.createDiv({ cls: 'wechat-modal-buttons' });
+    if (fatalError || failedResults.length > 0) {
+      const retryBtn = btnRow.createEl('button', { text: '重新选择平台' });
+      retryBtn.onclick = () => {
+        modal.close();
+        this.showMultiPlatformSyncModal();
+      };
+    }
+    const closeBtn = btnRow.createEl('button', {
+      text: isAllSuccess ? '完成' : '关闭',
+      cls: 'mod-cta',
+    });
+    closeBtn.onclick = () => modal.close();
+
+    modal.open();
+  }
+
+  async showMultiPlatformSyncModal(options = {}) {
+    return showMultiPlatformPublishModal(this, options);
   }
 
   /**
@@ -4172,17 +4776,34 @@ class AppleStyleView extends ItemView {
     this.previewContainer.empty();
     this.previewContainer.removeClass('apple-has-content'); // 移除内容状态类
     const placeholder = this.previewContainer.createEl('div', { cls: 'apple-placeholder' });
-    placeholder.createEl('div', { cls: 'apple-placeholder-icon', text: '📝' });
-    placeholder.createEl('h2', { text: '微信公众号排版转换器' });
-    placeholder.createEl('p', { text: '将 Markdown 转换为精美的 HTML，一键同步到草稿箱' });
+    const iconDiv = placeholder.createEl('div', { cls: 'apple-placeholder-icon' });
+    try {
+      const path = require('path');
+      const fs = require('fs');
+      const vaultPath = this.app.vault.adapter.basePath;
+      const configDir = this.app.vault.configDir;
+      const imgPath = path.join(vaultPath, configDir, 'plugins', 'obsidian-wechat-converter', 'images', 'icon.png');
+      const imgBuffer = fs.readFileSync(imgPath);
+      const base64 = imgBuffer.toString('base64');
+      const img = iconDiv.createEl('img', { attr: { alt: 'Obsidian 发布助手' } });
+      img.src = 'data:image/png;base64,' + base64;
+      img.style.width = '64px';
+      img.style.height = '64px';
+      img.style.display = 'block';
+    } catch (e) {
+      iconDiv.textContent = '📝';
+      console.error('Failed to load brand icon:', e);
+    }
+    placeholder.createEl('h2', { text: 'Obsidian 发布助手' });
+    placeholder.createEl('p', { text: '在 Obsidian 写作，预览确认公众号排版，或直接以 Markdown 原文发布到其他平台。' });
     const steps = placeholder.createEl('div', { cls: 'apple-steps' });
-    steps.createEl('div', { text: '1️⃣ 打开需要转换的 Markdown 文件' });
-    steps.createEl('div', { text: '2️⃣ 预览区会自动显示转换效果' });
-    steps.createEl('div', { text: '3️⃣ 点击「一键同步到草稿箱」即可发送' });
+    steps.createEl('div', { text: '1️⃣ 打开要发布的 Markdown 文件' });
+    steps.createEl('div', { text: '2️⃣ 在预览中确认微信公众号排版' });
+    steps.createEl('div', { text: '3️⃣ 点击「发布与分发」选择微信或其他平台' });
 
     // 添加提示
-    const note = placeholder.createEl('p', {
-      text: '注意：如当前已打开文档但未显示，请重新点击一下文档即可触发',
+    placeholder.createEl('p', {
+      text: '提示：点击要发布的文档即可在预览中查看排版效果。',
       cls: 'apple-placeholder-note'
     });
   }
@@ -4503,6 +5124,174 @@ class AppleStyleView extends ItemView {
     return tempDiv.innerHTML;
   }
 
+  async prepareHtmlForWechatsyncArticle(html) {
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = html || '';
+    await this.processImagesToDataURL(tempDiv);
+    this.transformCodeBlocksForWechatsync(tempDiv);
+    return tempDiv.innerHTML;
+  }
+
+  // Bridge publish flow only. Unlike prepareHtmlForWechatsyncArticle (which
+  // inlines local images as data: URLs for the legacy WeChat clipboard
+  // flow), the bridge protocol carries image bytes via assets[] separately.
+  // Inlining base64 here would double-encode every local image: once into
+  // assets[] (correct), once into content[] (~33% inflated). The latter
+  // also breaks retry, because the extension has to redact base64 before
+  // persisting history (storage quota), and a redacted data: URL cannot be
+  // re-published. So: rewrite app:// img srcs back to asset://<id> using
+  // the assets[] metadata resolveArticleImages already produced. Do NOT
+  // call processImagesToDataURL.
+  async prepareHtmlForWechatsyncArticleViaBridge(html, assets = []) {
+    const mapped = mapAppUrlImagesToAssetUrls(html || '', assets);
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = mapped;
+    this.transformCodeBlocksForWechatsync(tempDiv);
+    return tempDiv.innerHTML;
+  }
+
+  // Bridge publish flow: produce a small inline JPEG data URL for the
+  // cover asset, suitable for direct <img src> use in the extension's
+  // popup History list (which cannot resolve asset:// URLs in plain DOM).
+  // Budget: longest edge ≤ COVER_THUMBNAIL_MAX_DIM (256px), JPEG quality
+  // tries 0.7 → 0.55 → 0.4 until size ≤ COVER_THUMBNAIL_MAX_BYTES (~8KB).
+  // Returns '' on any failure — the extension will fall back to its own
+  // local-thumbnail path. Never throws into the publish pipeline.
+  async generateCoverThumbnailFromAsset(asset) {
+    try {
+      if (!asset || typeof asset !== 'object') return '';
+      const base64 = typeof asset.base64 === 'string' ? asset.base64 : '';
+      const mimeType = typeof asset.mimeType === 'string' ? asset.mimeType : '';
+      if (!base64 || !mimeType) return '';
+      // GIFs would lose animation if we re-encode to JPEG; skip and let
+      // the extension fall back to its local-thumbnail path (which can
+      // keep the first frame). Plugin keeps the implementation small.
+      if (mimeType === 'image/gif') return '';
+
+      const sourceDataUrl = `data:${mimeType};base64,${base64}`;
+      const image = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('image_decode_failed'));
+        img.src = sourceDataUrl;
+      });
+
+      const naturalW = image.naturalWidth || image.width || 0;
+      const naturalH = image.naturalHeight || image.height || 0;
+      if (!naturalW || !naturalH) return '';
+
+      const MAX_DIM = 256;
+      const scale = Math.min(1, MAX_DIM / Math.max(naturalW, naturalH));
+      const targetW = Math.max(1, Math.round(naturalW * scale));
+      const targetH = Math.max(1, Math.round(naturalH * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return '';
+      ctx.drawImage(image, 0, 0, targetW, targetH);
+
+      const MAX_BYTES = 8 * 1024;
+      // The data URL prefix `data:image/jpeg;base64,` adds ~22 bytes; we
+      // compare the whole string length against MAX_BYTES, accepting
+      // that the prefix counts toward the budget (negligible).
+      for (const quality of [0.7, 0.55, 0.4]) {
+        const dataUrl = canvas.toDataURL('image/jpeg', quality);
+        if (typeof dataUrl === 'string' && dataUrl.length <= MAX_BYTES) {
+          return dataUrl;
+        }
+      }
+      // Even the lowest quality is too big; return empty so the
+      // extension does the local fallback instead of carrying a payload
+      // that bloats `chrome.storage.local`.
+      return '';
+    } catch (err) {
+      console.warn('[Wechatsync] generateCoverThumbnailFromAsset failed', err);
+      return '';
+    }
+  }
+
+  extractCodeTextForWechatsync(block) {
+    const codePre = block?.querySelector?.('pre');
+    if (!codePre) return '';
+
+    const sectionNodes = Array.from(codePre.querySelectorAll('section'));
+    const codeLinesNode = sectionNodes
+      .filter((node) => {
+        const style = (node.getAttribute('style') || '').toLowerCase();
+        return style.includes('white-space:nowrap') || style.includes('white-space: nowrap');
+      })
+      .sort((a, b) => {
+        const score = (node) => {
+          const html = node.innerHTML || '';
+          return (html.includes('<br') ? 10000 : 0) + (node.textContent || '').length;
+        };
+        return score(b) - score(a);
+      })[0];
+
+    if (codeLinesNode) {
+      const scratch = document.createElement('div');
+      return (codeLinesNode.innerHTML || '')
+        .split(/<br\s*\/?>/i)
+        .map((lineHtml) => {
+          scratch.innerHTML = lineHtml || '';
+          return (scratch.textContent || '').replace(/\u00a0/g, ' ');
+        })
+        .join('\n');
+    }
+
+    const codeEl = codePre.querySelector('code');
+    return ((codeEl ? codeEl.textContent : codePre.textContent) || '').replace(/\u00a0/g, ' ');
+  }
+
+  transformCodeBlocksForWechatsync(root) {
+    if (!root) return;
+
+    const codeBlocks = Array.from(root.querySelectorAll('.code-snippet__fix'));
+    codeBlocks.forEach((block) => {
+      const codeText = this.extractCodeTextForWechatsync(block);
+
+      const pre = document.createElement('pre');
+      pre.setAttribute('style', [
+        'display:block !important',
+        'width:100% !important',
+        'max-width:100% !important',
+        'margin:14px 0 !important',
+        'padding:12px 14px !important',
+        'box-sizing:border-box !important',
+        'background:#f6f8fa !important',
+        'border:1px solid #e5e7eb !important',
+        'border-radius:8px !important',
+        'overflow-x:auto !important',
+        'overflow-y:hidden !important',
+        '-webkit-overflow-scrolling:touch !important',
+        "font-family:'SF Mono',Consolas,Monaco,monospace !important",
+        'font-size:13px !important',
+        'line-height:1.65 !important',
+        'color:#24292f !important',
+        'text-indent:0 !important',
+        'white-space:pre !important',
+      ].join(';'));
+
+      const code = document.createElement('code');
+      code.setAttribute('style', [
+        'display:block !important',
+        'margin:0 !important',
+        'padding:0 !important',
+        'background:transparent !important',
+        'color:#24292f !important',
+        'font:inherit !important',
+        'line-height:inherit !important',
+        'white-space:pre !important',
+        'text-indent:0 !important',
+      ].join(';'));
+      code.textContent = codeText;
+      pre.appendChild(code);
+      block.replaceWith(pre);
+    });
+  }
+
   transformCodeBlocksForClipboard(root) {
     if (!root) return;
 
@@ -4681,7 +5470,7 @@ class AppleStyleView extends ItemView {
 
     } catch (error) {
       console.error('复制失败:', error);
-      new Notice('❌ 复制失败，请使用「一键同步到草稿箱」发送文章');
+      new Notice('❌ 复制失败，请使用「发布与分发」发送文章');
       if (this.copyBtn) {
         this.copyBtn.classList.remove('is-copying');
         this.setCopyButtonIcon('copy');
@@ -4841,7 +5630,7 @@ class AppleStyleView extends ItemView {
       this.mermaidImageCache.clear();
     }
 
-    console.log('🍎 转换器面板已关闭');
+    console.log('🍎 发布助手面板已关闭');
   }
 
   /**
@@ -4857,7 +5646,7 @@ class AppleStyleView extends ItemView {
 }
 
 /**
- * 📝 微信公众号转换器设置面板
+ * 📝 Obsidian 发布助手设置面板
  */
 class AppleStyleSettingTab extends PluginSettingTab {
   constructor(app, plugin) {
@@ -4889,7 +5678,40 @@ class AppleStyleSettingTab extends PluginSettingTab {
 
     // 提示信息
     new Setting(containerEl)
-      .setDesc('更多排版样式选项（主题、字号、代码块等）请在插件侧边栏面板中进行设置。');
+      .setDesc('在 Obsidian 中完成写作与预览；微信账号、浏览器插件发布和默认发布选项在这里配置。更多排版样式请在侧边栏面板中调整。');
+
+    // === Tab 导航 ===
+    const tabBar = containerEl.createDiv({ cls: 'apple-settings-tabs' });
+    const wechatTab = tabBar.createDiv({ cls: 'apple-settings-tab active', text: '微信' });
+    const multiTab = tabBar.createDiv({ cls: 'apple-settings-tab', text: MULTI_PLATFORM_TAB_LABEL });
+
+    const wechatContent = containerEl.createDiv({ cls: 'apple-settings-tab-content' });
+    const multiContent = containerEl.createDiv({ cls: 'apple-settings-tab-content' });
+    multiContent.style.display = 'none';
+
+    wechatTab.onclick = () => {
+      this._activeSettingsTab = 'wechat';
+      wechatTab.addClass('active');
+      multiTab.removeClass('active');
+      wechatContent.style.display = '';
+      multiContent.style.display = 'none';
+    };
+    multiTab.onclick = () => {
+      this._activeSettingsTab = 'multi';
+      multiTab.addClass('active');
+      wechatTab.removeClass('active');
+      wechatContent.style.display = 'none';
+      multiContent.style.display = '';
+    };
+
+    // 恢复上次激活的 Tab
+    if (this._activeSettingsTab === 'multi') {
+      multiTab.onclick();
+    }
+
+    // === 微信 Tab ===
+    {
+      const containerEl = wechatContent;
 
     // 预览模式设置
     new Setting(containerEl)
@@ -4904,8 +5726,7 @@ class AppleStyleSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.settings.usePhoneFrame = value;
           await this.plugin.saveSettings();
-          // 提示用户重启面板
-          new Notice('设置已保存，请关闭并重新打开转换器面板以生效');
+          new Notice('设置已保存，请关闭并重新打开发布助手面板以生效');
         }));
 
     // 图片水印设置
@@ -4921,7 +5742,7 @@ class AppleStyleSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.settings.enableWatermark = value;
           await this.plugin.saveSettings();
-          new Notice('设置已保存，请关闭并重新打开转换器面板以生效');
+          new Notice('设置已保存，请关闭并重新打开发布助手面板以生效');
         }));
 
     // 本地头像上传
@@ -4939,7 +5760,6 @@ class AppleStyleSettingTab extends PluginSettingTab {
           const file = e.target.files[0];
           if (!file) return;
 
-          // 限制文件大小 (100KB)
           if (file.size > 100 * 1024) {
             new Notice('❌ 图片太大，请选择小于 100KB 的图片');
             return;
@@ -4950,14 +5770,13 @@ class AppleStyleSettingTab extends PluginSettingTab {
             this.plugin.settings.avatarBase64 = event.target.result;
             await this.plugin.saveSettings();
             new Notice('✅ 头像已上传');
-            this.display(); // 刷新设置页面
+            this.display();
           };
           reader.readAsDataURL(file);
         };
         input.click();
       }));
 
-    // 清除本地头像按钮
     if (this.plugin.settings.avatarBase64) {
       uploadSetting.addButton(button => button
         .setButtonText('清除')
@@ -4981,7 +5800,6 @@ class AppleStyleSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    // 微信公众号账号管理
     new Setting(containerEl)
       .setName('微信公众号账号')
       .setDesc('请在微信公众号后台 [设置与开发] -> [基本配置] 中获取 AppID 和 AppSecret，并确保已将当前 IP 加入白名单。')
@@ -5081,8 +5899,6 @@ class AppleStyleSettingTab extends PluginSettingTab {
 
     this.renderAiSettingsSection(containerEl);
 
-
-
     // 高级设置
     new Setting(containerEl)
       .setName('高级设置')
@@ -5108,7 +5924,7 @@ class AppleStyleSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           if (this.isAbsolutePathLike(value)) {
             if (!hasWarnedAbsoluteCleanupPath) {
-              new Notice('⚠️ 清理目录请填写 vault 内相对路径，不要使用绝对路径（如 /Users/... 或 C:\\...）');
+              new Notice('⚠️ 清理目录请填写 vault 内相对路径，不要使用绝对路径（如 /Users/... 或 C:\...）');
               hasWarnedAbsoluteCleanupPath = true;
             }
           } else {
@@ -5116,10 +5932,6 @@ class AppleStyleSettingTab extends PluginSettingTab {
           }
 
           const normalized = this.normalizeVaultPath(value);
-          if (normalized.includes('..')) {
-            new Notice('❌ 清理目录不能包含 ..');
-            return;
-          }
           this.plugin.settings.cleanupDirTemplate = normalized;
           await this.plugin.saveSettings();
         }));
@@ -5143,22 +5955,22 @@ class AppleStyleSettingTab extends PluginSettingTab {
         descDiv.createEl('a', {
           text: '查看部署指南',
           href: 'https://xiaoweibox.top/chats/wechat-proxy',
-          style: 'margin-left: 5px;'
+          attr: { style: 'margin-left: 5px;' },
         });
 
         frag.createDiv({
-            cls: 'wechat-proxy-note',
-            style: 'margin-top: 6px; font-size: 12px; color: var(--text-muted); background: var(--background-secondary); padding: 8px; border-radius: 4px;'
+          cls: 'wechat-proxy-note',
+          attr: { style: 'margin-top: 6px; font-size: 12px; color: var(--text-muted); background: var(--background-secondary); padding: 8px; border-radius: 4px;' },
         }, el => {
-           el.createSpan({ text: '🔒 安全提示：代理服务将中转您的请求。请确保使用受信任的代理（自建或可靠第三方），以保护 AppSecret 安全。' });
+          el.createSpan({ text: '🔒 安全提示：代理服务将中转您的请求。请确保使用受信任的代理（自建或可靠第三方），以保护 AppSecret 安全。' });
         });
       }))
       .addText(text => text
         .setPlaceholder('https://your-proxy.workers.dev')
-        .setValue(this.plugin.settings.proxyUrl)
+        .setValue(this.plugin.settings.proxyUrl || '')
         .onChange(async (value) => {
           const trimmedValue = value.trim();
-          if (trimmedValue && !trimmedValue.startsWith('https://')) {
+          if (trimmedValue && !trimmedValue.toLowerCase().startsWith('https://')) {
             if (!hasWarnedInsecureProxy) {
               new Notice('⚠️ 安全风险：代理地址必须使用 HTTPS 以保护您的 AppSecret。');
               hasWarnedInsecureProxy = true;
@@ -5169,6 +5981,11 @@ class AppleStyleSettingTab extends PluginSettingTab {
           this.plugin.settings.proxyUrl = trimmedValue;
           await this.plugin.saveSettings();
         }));
+
+    }
+
+    // === 其他平台 Tab ===
+    renderMultiPlatformSettingsTab(this, multiContent);
   }
 
   renderAiSettingsSection(containerEl) {
@@ -5735,11 +6552,11 @@ class AppleStyleSettingTab extends PluginSettingTab {
 }
 
 /**
- * 📝 微信公众号转换器主插件
+ * 📝 Obsidian 发布助手主插件
  */
 class AppleStylePlugin extends Plugin {
   async onload() {
-    console.log('📝 正在加载微信公众号转换器...');
+    console.log('📝 正在加载 Obsidian 发布助手...');
 
     await this.loadSettings();
 
@@ -5787,7 +6604,9 @@ class AppleStylePlugin extends Plugin {
       });
     });
 
-    console.log('✅ 微信公众号转换器加载完成');
+    this.startWechatSyncBridgeInBackground('plugin-load');
+
+    console.log('✅ Obsidian 发布助手加载完成');
   }
 
   insertImageSwipeCallout(editor, type = 'image-swipe') {
@@ -5858,10 +6677,74 @@ class AppleStylePlugin extends Plugin {
     return null;
   }
 
+  getWechatSyncBridgeService() {
+    const settings = normalizeMultiPlatformSyncSettings(this.settings.multiPlatformSync);
+    const cacheKey = [
+      settings.port,
+      settings.token,
+      settings.allowRemote ? 1 : 0,
+    ].join(':');
+    if (this._wechatSyncBridgeService && this._wechatSyncBridgeCacheKey === cacheKey) {
+      return this._wechatSyncBridgeService;
+    }
+
+    if (this._wechatSyncBridgeService?.stop) {
+      this._wechatSyncBridgeService.stop().catch((error) => {
+        console.warn('停止旧浏览器插件连接失败:', error);
+      });
+    }
+
+    const http = require('http');
+    this._wechatSyncBridgeCacheKey = cacheKey;
+    const self = this;
+    this._wechatSyncBridgeService = createWechatSyncBridgeService({
+      http,
+      port: settings.port,
+      token: settings.token,
+      allowRemote: settings.allowRemote,
+      serverVersion: this.manifest?.version || '',
+      initialConnectedClients: settings.connectedClients || [],
+      async onClientRegistryChange(clients) {
+        self.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings({
+          ...self.settings.multiPlatformSync,
+          connectedClients: clients,
+        });
+        await self.saveSettings();
+        self.app?.setting?.activeTab?.display?.();
+      },
+    });
+    return this._wechatSyncBridgeService;
+  }
+
+  startWechatSyncBridgeInBackground(reason = 'manual') {
+    const settings = normalizeMultiPlatformSyncSettings(this.settings.multiPlatformSync);
+    if (!settings.enabled) return;
+
+    const bridge = this.getWechatSyncBridgeService();
+    bridge.start()
+      .then((status) => {
+        console.info('[Wechatsync] bridge warm start', {
+          reason,
+          port: settings.port,
+          status,
+        });
+      })
+      .catch((error) => {
+        console.warn('[Wechatsync] bridge warm start failed', {
+          reason,
+          port: settings.port,
+          code: error?.code,
+          message: error?.message || String(error),
+        });
+      });
+  }
+
   async loadSettings() {
     const loadedData = (await this.loadData()) || {};
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
     let didMigrate = false;
+
+    this.settings.multiPlatformSync = normalizeMultiPlatformSyncSettings(this.settings.multiPlatformSync);
 
     const rawAiSettings = loadedData.ai;
     this.settings.ai = normalizeAiSettings(rawAiSettings || this.settings.ai || {});
@@ -6074,8 +6957,13 @@ class AppleStylePlugin extends Plugin {
     }
   }
 
-  onunload() {
-    console.log('📝 微信公众号转换器已卸载');
+  async onunload() {
+    if (this._wechatSyncBridgeService?.stop) {
+      await this._wechatSyncBridgeService.stop().catch((error) => {
+        console.warn('停止浏览器插件连接失败:', error);
+      });
+    }
+    console.log('📝 Obsidian 发布助手已卸载');
   }
 }
 
@@ -6085,3 +6973,7 @@ module.exports.WechatAPI = WechatAPI;
 module.exports.AppleStyleSettingTab = AppleStyleSettingTab;
 module.exports.createImageSwipeCalloutMarkdown = createImageSwipeCalloutMarkdown;
 module.exports.getImageSwipeCommandCopy = getImageSwipeCommandCopy;
+module.exports.stripMarkdownFrontmatter = stripMarkdownFrontmatter;
+module.exports.describeWechatsyncConnectionState = describeWechatsyncConnectionState;
+module.exports.renderWechatsyncConnectionStatusBar = renderWechatsyncConnectionStatusBar;
+module.exports.formatWechatsyncCheckedAt = formatWechatsyncCheckedAt;

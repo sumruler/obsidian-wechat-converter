@@ -133,6 +133,54 @@ function convertObsidianCalloutsToLegacy(container, converter) {
   }
 }
 
+function getObsidianCalloutParts(callout) {
+  const typeRaw =
+    callout.getAttribute('data-callout') ||
+    callout.getAttribute('data-callout-type') ||
+    '';
+  const type = String(typeRaw || '').trim().toLowerCase();
+  const titleEl =
+    callout.querySelector(':scope > .callout-title .callout-title-inner') ||
+    callout.querySelector(':scope > .callout-title-inner') ||
+    callout.querySelector(':scope > .callout-title');
+  const titleText = String(titleEl?.textContent || '').trim();
+  const contentEl =
+    callout.querySelector(':scope > .callout-content') ||
+    callout.querySelector(':scope > .callout-body');
+
+  return { type, titleText, contentEl };
+}
+
+function convertObsidianImageSwipeCallouts(container) {
+  if (!container) return;
+
+  const callouts = Array.from(
+    container.querySelectorAll('div.callout,aside.callout,blockquote.callout,section.callout')
+  );
+
+  for (const callout of callouts) {
+    if (!callout || !callout.parentNode) continue;
+    const { type, titleText, contentEl } = getObsidianCalloutParts(callout);
+    if (type !== 'image-swipe' && type !== 'image-sensitive') continue;
+
+    const sourceEl = contentEl || callout;
+    const imgs = Array.from(sourceEl.querySelectorAll('img'));
+    if (!imgs.length) continue;
+
+    const block = document.createElement('section');
+    block.setAttribute('data-owc-image-swipe', '1');
+    block.setAttribute('data-owc-image-swipe-type', type);
+    if (type === 'image-sensitive') {
+      block.setAttribute('data-owc-image-swipe-warning', encodeURIComponent(titleText || IMAGE_SWIPE_DEFAULT_WARNING));
+    } else {
+      block.setAttribute('data-owc-image-swipe-hint', encodeURIComponent(titleText || IMAGE_SWIPE_DEFAULT_HINT));
+    }
+
+    imgs.forEach((img) => block.appendChild(img));
+    callout.replaceWith(block);
+  }
+}
+
 function sanitizeClassList(el, tagName, finalStage = false) {
   const className = el.getAttribute('class');
   if (!className) return;
@@ -178,7 +226,7 @@ function pruneObsidianOnlyAttributes(container, { finalStage = false } = {}) {
 
   const getAllowedAttrs = (tagName) => {
     if (tagName === 'a') return new Set(['href', 'style']);
-    if (tagName === 'img') return new Set(['src', 'alt', 'style', 'width', 'height', 'class']);
+    if (tagName === 'img') return new Set(['src', 'alt', 'style', 'width', 'height', 'class', 'referrerpolicy']);
     if (tagName === 'section' && !finalStage) {
       return new Set(['style', 'class', 'data-owc-image-swipe', 'data-owc-image-swipe-type', 'data-owc-image-swipe-warning', 'data-owc-image-swipe-hint']);
     }
@@ -583,6 +631,13 @@ function normalizeImageSwipeImage(img, converter) {
 
   const rawAlt = img.getAttribute('alt') || '';
   const alt = buildLegacyParityImageAlt(img, rawAlt);
+  const widthHint = extractWidthHintFromText(alt);
+  if (widthHint && !img.getAttribute('width')) {
+    img.setAttribute('width', widthHint);
+  }
+  if (/^(?:https?:)?\/\//i.test(src)) {
+    img.setAttribute('referrerpolicy', 'no-referrer');
+  }
   img.setAttribute('src', src);
   img.setAttribute('alt', alt);
   return {
@@ -1304,6 +1359,7 @@ function serializeObsidianRenderedHtml({
 
   materializeImageEmbedPlaceholders(container, converter);
   promoteImageEmbedAltHints(container);
+  convertObsidianImageSwipeCallouts(container);
   convertObsidianCalloutsToLegacy(container, converter);
   pruneObsidianOnlyAttributes(container, { finalStage: false });
   normalizeLegacyTagAliases(container);

@@ -9,7 +9,8 @@ coverage/
 ClaudeFix.md
 
 review.md
-docs/plans/
+docs/*
+!docs/support.md
 
 # Local skill directories
 .codex/

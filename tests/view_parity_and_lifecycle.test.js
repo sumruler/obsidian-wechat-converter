@@ -47,7 +47,7 @@ describe('AppleStyleView native render + lifecycle', () => {
 
   it('getDisplayText should keep the unified plugin title', () => {
     const view = new AppleStyleView(null, { settings: {} });
-    expect(view.getDisplayText()).toBe('微信公众号转换器');
+    expect(view.getDisplayText()).toBe('Obsidian 发布助手');
   });
 
   it('convertCurrent should render native html in silent mode', async () => {
@@ -491,7 +491,7 @@ describe('AppleStyleView native render + lifecycle', () => {
     expect(container.querySelector('.apple-toolbar-plugin-name')).toBeNull();
     expect(container.querySelector('.apple-icon-btn[aria-label="样式设置"]')).toBeTruthy();
     expect(container.querySelector('.apple-icon-btn[aria-label="AI 编排"]')).toBeTruthy();
-    expect(container.querySelector('.apple-icon-btn[aria-label="一键同步到草稿箱"]')).toBeTruthy();
+    expect(container.querySelector('.apple-icon-btn[aria-label="发布与分发"]')).toBeTruthy();
     expect(container.querySelector('.apple-icon-btn[aria-label="复制到公众号"]')).toBeNull();
   });
 

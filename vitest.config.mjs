@@ -13,6 +13,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     include: ['tests/**/*.test.js'],
+    setupFiles: ['./tests/helpers/obsidian-resolver.cjs'],
     server: {
       deps: {
         inline: ['obsidian'],
